@@ -46,7 +46,9 @@ export default function CustomerDetail() {
     if (!customer?.recordingUrl) return;
 
     if (!audioRef.current) {
-      audioRef.current = new Audio(customer.recordingUrl);
+      // Convert absolute localhost URL to relative path (Vite proxy handles it)
+      const url = customer.recordingUrl.replace(/^https?:\/\/localhost:\d+/, '');
+      audioRef.current = new Audio(url);
       audioRef.current.addEventListener('ended', () => setPlaying(false));
     }
 

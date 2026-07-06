@@ -578,8 +578,8 @@ router.post('/:id/start', authMiddleware, async (req, res) => {
       [campaignId]
     );
 
-    // Trigger the simulator!
-    startCampaignSimulation(campaignId, req.clinicId);
+    // Disable the automatic backend simulation since we are now using the real Pipecat bot!
+    // startCampaignSimulation(campaignId, req.clinicId);
 
     res.json({ success: true, message: 'Campaign started successfully' });
   } catch (err) {

@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import StatCard from '../components/ui/StatCard.jsx'
 import ProgressBar from '../components/ui/ProgressBar.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import VoiceCallBanner from '../components/ui/VoiceCallBanner.jsx'
 import { api } from '../services/api.js'
 
 const STATUS_ICON = {
@@ -89,6 +90,8 @@ export default function LiveCampaign() {
 
   return (
     <div className="flex flex-col gap-lg pb-12">
+      {/* Floating voice session banner — shows when Pipecat bot is running */}
+      <VoiceCallBanner campaignId={campaignId} />
       <header className="flex justify-between items-start flex-wrap gap-md">
         <div className="flex flex-col gap-xs">
           <div className="flex items-center gap-sm">

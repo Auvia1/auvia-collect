@@ -129,6 +129,26 @@ export const api = {
     });
   },
 
+  // Voice Bot
+  async startVoiceBot(campaignId, contactId = null) {
+    return request('/voice/start', {
+      method: 'POST',
+      body: JSON.stringify({ campaignId, ...(contactId ? { contactId } : {}) }),
+    });
+  },
+
+
+  async stopVoiceBot(campaignId) {
+    return request('/voice/stop', {
+      method: 'POST',
+      body: JSON.stringify({ campaignId }),
+    });
+  },
+
+  async getVoiceBotStatus(campaignId) {
+    return request(`/voice/status?campaignId=${campaignId}`);
+  },
+
   async getCampaignReport(campaignId) {
     return request(`/campaigns/${campaignId}/report`);
   },

@@ -30,7 +30,23 @@ export default function CampaignSummary() {
     setStarting(true)
     setError('')
     try {
+      // 1. Start the DB simulation (marks campaign active)
       await api.startCampaign(campaignId)
+
+      // 2. Spawn the Pipecat voice bot in the background
+      let voiceUrl = 'http://localhost:7860'
+      try {
+        const voiceRes = await api.startVoiceBot(campaignId)
+        voiceUrl = voiceRes.url || voiceUrl
+      } catch (voiceErr) {
+        console.warn('Could not start voice bot:', voiceErr.message)
+        // Non-fatal — campaign can still proceed in simulation mode
+      }
+
+      // 3. Open Pipecat WebRTC UI in a new tab for the voice session
+      window.open(voiceUrl, '_blank', 'noopener,noreferrer')
+
+      // 4. Navigate to live dashboard
       navigate(`/campaigns/${campaignId}/live`)
     } catch (err) {
       setError(err.message || 'Failed to launch campaign')

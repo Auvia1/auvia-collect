@@ -131,7 +131,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.get('/callback/queue', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT c.id as call_id, cont.id as contact_id, cont.name, cont.phone, cont.amount_due, cont.payment_context,
+      `SELECT c.id as call_id, cont.campaign_id as campaign_id, cont.id as contact_id, cont.name, cont.phone, cont.amount_due, cont.payment_context,
               c.callback_date, c.callback_time, cont.notes
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
@@ -158,11 +158,12 @@ router.get('/callback/queue', authMiddleware, async (req, res) => {
 
       return {
         id: row.call_id,
+        campaignId: row.campaign_id,
         contactId: row.contact_id,
         name: row.name,
         phone: row.phone,
         amount: parseFloat(row.amount_due),
-        context: row.payment_context.replace('_', ' '),
+        context: row.payment_context ? row.payment_context.replace('_', ' ') : 'other',
         callbackTime: timeStr,
         notes: row.notes || 'Scheduled callback by request.',
       };
