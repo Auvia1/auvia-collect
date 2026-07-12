@@ -11,7 +11,7 @@ import callsRouter from './routes/calls.js';
 import settingsRouter from './routes/settings.js';
 import usersRouter from './routes/users.js';
 import adminRouter from './routes/admin.js';
-import voiceRouter from './routes/voice.js';
+import voiceRouter, { handleUpgrade } from './routes/voice.js';
 
 dotenv.config();
 
@@ -25,6 +25,7 @@ app.use(cors());
 
 // Body parser
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ── Serve call recordings (WAV files written by the Pipecat bot) ──────────────
 // Files live at: auvia-voice-agent/recordings/call_<session>.wav
@@ -58,7 +59,15 @@ app.get('/api/health', (req, res) => {
 });
 
 // Start listening
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
   console.log(`Healthcheck: http://localhost:${PORT}/api/health`);
+});
+
+server.on('upgrade', (request, socket, head) => {
+  if (request.url.startsWith('/api/voice/ws/')) {
+    handleUpgrade(request, socket, head);
+  } else {
+    socket.destroy();
+  }
 });

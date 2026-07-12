@@ -189,7 +189,7 @@ export default function ReviewContacts() {
                     </td>
                     <td className="py-md px-md font-medium group-hover:text-primary transition-colors">{row.name}</td>
                     <td className="py-md px-md text-secondary">{row.phone}</td>
-                    <td className="py-md px-md text-right font-medium text-on-surface">${row.amount.toFixed(2)}</td>
+                    <td className="py-md px-md text-right font-medium text-on-surface">₹{row.amount.toFixed(2)}</td>
                     <td className="py-md px-md">
                       <Badge variant={CONTEXT_VARIANT[row.context] || CONTEXT_VARIANT[formatContextLabel(row.context)] || 'secondary'}>
                         {formatContextLabel(row.context)}

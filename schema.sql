@@ -123,6 +123,13 @@ create table clinics (
   sms_sender_id          text,
   preferred_channel      notification_channel not null default 'whatsapp',
 
+  -- Vobiz credentials
+  vobiz_auth_id          text,
+  vobiz_auth_token       text,
+
+  -- AI voice agent system prompt (optional, overrides default if set)
+  system_prompt          text,
+
   -- Calling rules (TRAI/DND compliance)
   max_retry_attempts     int not null default 3,
   retry_cooldown_hours   int not null default 6,
@@ -277,6 +284,8 @@ create table calls (
   sentiment          text,
 
   telephony_call_id  text,           -- Vobiz call SID for reconciliation
+  vobiz_call_sid     text,           -- Vobiz recording SID (from recording webhook)
+  amount             numeric(12,2),  -- amount billed on this call attempt
   started_at         timestamptz,
   ended_at           timestamptz,
 

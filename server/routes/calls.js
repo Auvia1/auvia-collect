@@ -43,7 +43,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const result = await db.query(
       `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
               c.campaign_id, camp.name as campaign_name, c.call_status, c.duration_seconds,
-              c.ai_summary, c.recording_url, pl.status as payment_link_status
+              c.ai_summary, c.recording_url, c.amount, c.vobiz_call_sid, pl.status as payment_link_status
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
        JOIN campaigns camp ON camp.id = c.campaign_id
@@ -58,6 +58,7 @@ router.get('/', authMiddleware, async (req, res) => {
       name: row.customer_name,
       phone: row.customer_phone,
       amount: parseFloat(row.amount_due),
+      callAmount: row.amount ? parseFloat(row.amount) : null,
       campaignId: row.campaign_id,
       campaignName: row.campaign_name,
       callStatus: getCallStatusLabel(row.call_status),
@@ -65,6 +66,8 @@ router.get('/', authMiddleware, async (req, res) => {
       duration: formatDuration(row.duration_seconds),
       summary: row.ai_summary || 'No summary available.',
       hasRecording: !!row.recording_url,
+      recordingUrl: row.recording_url || null,
+      vobizCallSid: row.vobiz_call_sid || null,
     }));
 
     res.json(formatted);
@@ -81,6 +84,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
               camp.name as campaign_name, c.call_status, c.duration_seconds, c.outcome,
               c.ai_summary, c.recording_url, c.transcript, c.sentiment,
+              c.amount, c.vobiz_call_sid, c.telephony_call_id,
               pl.status as payment_link_status, pl.short_url as payment_short_url,
               cont.notes as customer_notes
        FROM calls c
@@ -108,6 +112,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       name: row.customer_name,
       phone: row.customer_phone,
       amount: parseFloat(row.amount_due),
+      callAmount: row.amount ? parseFloat(row.amount) : null,
       campaignName: row.campaign_name,
       callStatus: getCallStatusLabel(row.call_status),
       paymentStatus: getPaymentStatusLabel(row.payment_link_status),
@@ -120,6 +125,8 @@ router.get('/:id', authMiddleware, async (req, res) => {
       paymentUrl: row.payment_short_url || '',
       notes: row.customer_notes || '',
       outcome: row.outcome,
+      vobizCallSid: row.vobiz_call_sid || null,
+      telephonyCallId: row.telephony_call_id || null,
     });
   } catch (err) {
     console.error('Error fetching call details:', err);
@@ -132,7 +139,7 @@ router.get('/callback/queue', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
       `SELECT c.id as call_id, cont.campaign_id as campaign_id, cont.id as contact_id, cont.name, cont.phone, cont.amount_due, cont.payment_context,
-              c.callback_date, c.callback_time, cont.notes
+              c.callback_date, c.callback_time, cont.notes, c.created_at
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
        WHERE c.clinic_id = $1 AND c.outcome = 'call_later' AND c.call_status = 'completed'
@@ -166,6 +173,9 @@ router.get('/callback/queue', authMiddleware, async (req, res) => {
         context: row.payment_context ? row.payment_context.replace('_', ' ') : 'other',
         callbackTime: timeStr,
         notes: row.notes || 'Scheduled callback by request.',
+        rawDate: row.callback_date,
+        originalCallDate: row.created_at,
+        time: row.callback_time ? row.callback_time.substring(0, 5) : '',
       };
     });
 
@@ -222,6 +232,63 @@ router.post('/:id/feedback', authMiddleware, async (req, res) => {
     await db.query('ROLLBACK');
     console.error('Error updating call feedback:', err);
     res.status(500).json({ error: 'Failed to save feedback' });
+  }
+});
+
+// GET /api/calls/:id/recording - Proxy the recording audio to avoid CORS issues
+// Uses fetch() which automatically follows HTTP redirects (Vobiz URLs often redirect to CDN)
+router.get('/:id/recording', authMiddleware, async (req, res) => {
+  try {
+    // Fetch the recording URL AND the clinic's Vobiz credentials in one go
+    const result = await db.query(
+      `SELECT c.recording_url, cl.vobiz_auth_id, cl.vobiz_auth_token
+       FROM calls c
+       JOIN clinics cl ON cl.id = c.clinic_id
+       WHERE c.id = $1 AND c.clinic_id = $2 LIMIT 1`,
+      [req.params.id, req.clinicId]
+    );
+
+    if (result.rows.length === 0 || !result.rows[0].recording_url) {
+      return res.status(404).json({ error: 'Recording not found' });
+    }
+
+    const { recording_url: recordingUrl, vobiz_auth_id, vobiz_auth_token } = result.rows[0];
+    console.log(`[RecordingProxy] Fetching: ${recordingUrl}`);
+
+    // Build Vobiz custom auth headers (NOT Basic Auth — Vobiz uses X-Auth-ID / X-Auth-Token)
+    const authId = vobiz_auth_id || process.env.VOBIZ_AUTH_ID;
+    const authToken = vobiz_auth_token || process.env.VOBIZ_AUTH_TOKEN;
+
+    // fetch() follows redirects by default + sends Vobiz credentials
+    const upstream = await fetch(recordingUrl, {
+      headers: {
+        'X-Auth-ID': authId,
+        'X-Auth-Token': authToken,
+      },
+    });
+
+    if (!upstream.ok) {
+      console.error(`[RecordingProxy] Upstream returned ${upstream.status} for ${recordingUrl}`);
+      return res.status(upstream.status).json({ error: `Failed to fetch recording: ${upstream.status}` });
+    }
+
+    const contentType = upstream.headers.get('content-type') || 'audio/mpeg';
+    const contentLength = upstream.headers.get('content-length');
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+
+    // Convert Web ReadableStream → Node.js Readable and pipe to Express response
+    const { Readable } = await import('stream');
+    Readable.fromWeb(upstream.body).pipe(res);
+
+  } catch (err) {
+    console.error('[RecordingProxy] Error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to proxy recording' });
+    }
   }
 });
 

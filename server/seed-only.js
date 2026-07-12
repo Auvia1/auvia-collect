@@ -34,20 +34,54 @@ try {
   `);
 
   console.log('3. Seeding Auvia Wellness Center clinic...');
+  const CLINIC_SYSTEM_PROMPT = `You are Meher, a professional and empathetic billing agent for Auvia Wellness Center in Bangalore. You make outbound calls to patients regarding outstanding payments.
+
+PERSONALITY:
+- Warm, professional, and empathetic
+- Always address patients by their first name
+- Keep responses to 1-2 short sentences
+- Never be aggressive or pushy about payment
+
+WORKFLOW FOR OUTBOUND CALLS:
+1. Confirm you are speaking with the correct patient: "Hello, am I speaking with {patient_name}?"
+2. Introduce yourself: "This is Meher calling from Auvia Wellness Center billing department."
+3. State the purpose: "I'm calling regarding your {payment_reason} of ₹{amount}."
+4. Offer a payment link via SMS/WhatsApp
+5. Confirm they received it, thank them, and end the call
+
+TOOLS AVAILABLE:
+- end_call: Use when conversation is complete or patient asks to hang up
+- switch_language: If patient prefers Hindi or Telugu
+- check_availability: If patient wants to book an appointment
+- voice_agent_book_appointment: To book an appointment
+- check_existing_appointment: To check existing appointments
+- verify_followup: For follow-up verifications
+- query_clinic_faq: For general clinic questions about hours, policies, etc.
+
+IMPORTANT RULES:
+- Do NOT ask the patient what they need — you know why you're calling
+- If they say they already paid, apologize for the inconvenience and thank them
+- If they request a callback, schedule it politely using the call_later outcome
+- If the patient is not available or you reach voicemail, end the call gracefully
+- Always end calls using the end_call tool`;
+
   await client.query(`
     INSERT INTO clinics (
       id, name, slug, address, city, state, phone, billing_email, status,
       razorpay_key_id, razorpay_key_secret, whatsapp_sender_id, sms_sender_id, preferred_channel,
+      vobiz_auth_id, vobiz_auth_token, system_prompt,
       max_retry_attempts, retry_cooldown_hours, calling_window_start, calling_window_end, max_concurrent_calls,
       created_by
     ) VALUES (
       '${clinicId}', 'Auvia Wellness Center', 'auvia-wellness', '123 Healthcare Blvd', 'Bangalore', 'Karnataka', 
       '+919876543210', 'billing@auvia.com', 'active',
       'rzp_test_key123', 'rzp_test_secret456', '+919876543211', 'AUVIAC', 'whatsapp',
+      'MA_XXXXXX', 'your_vobiz_auth_token', $1,
       3, 6, '09:00', '19:00', 5,
       '${adminId}'
     )
-  `);
+  `, [CLINIC_SYSTEM_PROMPT]);
+
 
   console.log('4. Seeding clinic members...');
   await client.query(`
@@ -147,12 +181,12 @@ try {
       outcome: 'paid_now',
       duration_seconds: 165,
       recording_url: 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg',
-      ai_summary: 'Patient Eleanor Rigby agreed to pay her consultation fee of $125.00. Payment link was sent during the call, and she completed the transaction immediately.',
+      ai_summary: 'Patient Eleanor Rigby agreed to pay her consultation fee of ₹125.00. Payment link was sent during the call, and she completed the transaction immediately.',
       sentiment: 'friendly',
       transcript: JSON.stringify([
         { from: 'agent', text: 'Hello, am I speaking with Eleanor Rigby?', at_seconds: 2 },
         { from: 'customer', text: 'Yes, this is Eleanor. Who is calling?', at_seconds: 5 },
-        { from: 'agent', text: 'Hi Eleanor, I am calling from Auvia Wellness Center regarding a pending consultation fee of $125 from your visit on June 15th.', at_seconds: 10 },
+        { from: 'agent', text: 'Hi Eleanor, I am calling from Auvia Wellness Center regarding a pending consultation fee of ₹125 from your visit on June 15th.', at_seconds: 10 },
         { from: 'customer', text: 'Ah, yes. I completely forgot about that invoice. Can I pay it over the phone or online?', at_seconds: 18 },
         { from: 'agent', text: 'I can trigger a secure payment link directly to your mobile phone via SMS or WhatsApp, which you can pay using UPI, card, or net banking.', at_seconds: 25 },
         { from: 'customer', text: 'That would be great, please send it to this number.', at_seconds: 32 },
@@ -189,7 +223,7 @@ try {
       transcript: JSON.stringify([
         { from: 'agent', text: 'Hello, this is Auvia Wellness. May I speak to Jude?', at_seconds: 3 },
         { from: 'customer', text: 'Speaking. What is this about?', at_seconds: 6 },
-        { from: 'agent', text: 'Jude, we are checking on the copay amount of $75.50 remaining from your session last month.', at_seconds: 12 },
+        { from: 'agent', text: 'Jude, we are checking on the copay amount of ₹75.50 remaining from your session last month.', at_seconds: 12 },
         { from: 'customer', text: 'Oh, okay. Can you send me the invoice via email or WhatsApp so I can pay it tonight?', at_seconds: 22 },
         { from: 'agent', text: 'Absolutely, I am sending a Razorpay link to this number right now.', at_seconds: 28 },
         { from: 'customer', text: 'Okay, I will check it and clear it later today.', at_seconds: 35 }
@@ -217,7 +251,7 @@ try {
       outcome: 'paid_now',
       duration_seconds: 120,
       recording_url: 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg',
-      ai_summary: 'Rita paid her $110.00 lab charges immediately via WhatsApp link.',
+      ai_summary: 'Rita paid her ₹110.00 lab charges immediately via WhatsApp link.',
       sentiment: 'happy',
       transcript: JSON.stringify([])
     }

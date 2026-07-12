@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef } from 'react'
 import Button from '../components/ui/Button.jsx'
-import { api } from '../services/api.js'
+import { api, fetchRecordingBlobUrl } from '../services/api.js'
 
 export default function CustomerDetail() {
   const { customerId } = useParams()
@@ -14,6 +14,8 @@ export default function CustomerDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [playing, setPlaying] = useState(false)
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0)
+  const [audioDuration, setAudioDuration] = useState(0)
   
   const audioRef = useRef(null)
 
@@ -33,32 +35,64 @@ export default function CustomerDetail() {
     loadCallDetails()
   }, [customerId])
 
-  // Cleanup audio
+  const [loadingAudio, setLoadingAudio] = useState(false)
+  const blobUrlRef = useRef(null)
+
+  // Cleanup audio and blob URL on unmount
   useEffect(() => {
     return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-    }
+      if (audioRef.current) audioRef.current.pause();
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
   }, []);
 
-  function handlePlayToggle() {
-    if (!customer?.recordingUrl) return;
-
-    if (!audioRef.current) {
-      // Convert absolute localhost URL to relative path (Vite proxy handles it)
-      const url = customer.recordingUrl.replace(/^https?:\/\/localhost:\d+/, '');
-      audioRef.current = new Audio(url);
-      audioRef.current.addEventListener('ended', () => setPlaying(false));
-    }
+  async function handlePlayToggle() {
+    if (!customer?.hasRecording) return;
 
     if (playing) {
-      audioRef.current.pause();
+      if (audioRef.current) audioRef.current.pause();
       setPlaying(false);
-    } else {
+      return;
+    }
+
+    // If we already have an audio object loaded, just play it
+    if (audioRef.current) {
       audioRef.current.play().catch(e => console.error('Audio play error:', e));
       setPlaying(true);
+      return;
     }
+
+    setLoadingAudio(true);
+    try {
+      // Fetch with auth token → blob URL (new Audio() cannot send auth headers)
+      const blobUrl = await fetchRecordingBlobUrl(customer.id);
+      blobUrlRef.current = blobUrl;
+      const audio = new Audio(blobUrl);
+      audioRef.current = audio;
+      audio.addEventListener('ended', () => { setPlaying(false); setAudioCurrentTime(0); });
+      audio.addEventListener('error', () => setPlaying(false));
+      audio.addEventListener('timeupdate', () => setAudioCurrentTime(audio.currentTime));
+      audio.addEventListener('loadedmetadata', () => setAudioDuration(audio.duration));
+      await audio.play();
+      setPlaying(true);
+    } catch (e) {
+      console.error('Failed to load/play recording:', e);
+    } finally {
+      setLoadingAudio(false);
+    }
+  }
+
+  function handleSeek(e) {
+    const t = parseFloat(e.target.value);
+    setAudioCurrentTime(t);
+    if (audioRef.current) audioRef.current.currentTime = t;
+  }
+
+  function formatAudioTime(secs) {
+    if (!secs || isNaN(secs)) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 
   async function handleSaveNote() {
@@ -83,7 +117,7 @@ export default function CustomerDetail() {
     report += `Patient Name: ${customer.name}\n`;
     report += `Phone: ${customer.phone}\n`;
     report += `Status: ${customer.paymentStatus}\n`;
-    report += `Pending Amount: $${customer.amount.toFixed(2)}\n`;
+    report += `Pending Amount: ₹${customer.amount.toFixed(2)}\n`;
     report += `Call Duration: ${customer.duration}\n`;
     report += `Call Status: ${customer.callStatus}\n`;
     report += `AI Summary: ${customer.summary || 'N/A'}\n`;
@@ -169,7 +203,7 @@ export default function CustomerDetail() {
                 <span className="block text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider mb-1">
                   Pending Amount
                 </span>
-                <span className="text-headline-lg font-display text-on-surface">${customer.amount.toFixed(2)}</span>
+                <span className="text-headline-lg font-display text-on-surface">₹{customer.amount.toFixed(2)}</span>
               </div>
               <div className="border-t border-outline-variant/30 pt-4">
                 <span className="block text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider mb-1">
@@ -177,6 +211,16 @@ export default function CustomerDetail() {
                 </span>
                 <span className="text-body-md font-body-md text-on-surface font-medium">{customer.duration}</span>
               </div>
+              {customer.callStatus === 'Completed' && (
+                <div className="border-t border-outline-variant/30 pt-4">
+                  <span className="block text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider mb-1">
+                    Credits Billed
+                  </span>
+                  <span className="text-body-md font-body-md text-on-surface font-medium">
+                    {customer.callAmount !== null && customer.callAmount !== undefined ? `${customer.callAmount} credits` : '0 credits'}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -208,24 +252,37 @@ export default function CustomerDetail() {
             {customer.hasRecording ? (
               <div className="flex items-center gap-4 bg-surface-container-low rounded-lg p-sm border border-outline-variant/30">
                 <button
-                  aria-label={playing ? "Pause" : "Play"}
+                  aria-label={loadingAudio ? "Loading..." : playing ? "Pause" : "Play"}
                   onClick={handlePlayToggle}
-                  className="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-on-primary-fixed-variant transition-colors shrink-0 shadow-sm"
+                  disabled={loadingAudio}
+                  className="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:bg-on-primary-fixed-variant transition-colors shrink-0 shadow-sm disabled:opacity-70"
                 >
-                  <span className="material-symbols-outlined filled">{playing ? 'pause' : 'play_arrow'}</span>
+                  <span className="material-symbols-outlined filled">{loadingAudio ? 'hourglass_top' : playing ? 'pause' : 'play_arrow'}</span>
                 </button>
-                <div className="flex-grow h-10 flex items-center gap-1">
-                  {Array.from({ length: 24 }).map((_, i) => (
-                    <div
-                      key={i}
-                      className={`w-1 rounded-full ${playing && i % 3 === 0 ? 'bg-primary animate-pulse' : 'bg-outline-variant'}`}
-                      style={{ height: `${8 + ((i * 7) % 32)}px` }}
-                    />
-                  ))}
+                <div className="flex-grow flex flex-col justify-center gap-1">
+                  {/* Scrubber range input */}
+                  <input
+                    type="range"
+                    min={0}
+                    max={audioDuration || 0}
+                    step={0.1}
+                    value={audioCurrentTime}
+                    onChange={handleSeek}
+                    disabled={!audioDuration}
+                    aria-label="Audio scrubber"
+                    className="w-full h-1.5 rounded-full accent-primary cursor-pointer disabled:cursor-not-allowed disabled:opacity-40"
+                    style={{
+                      background: audioDuration
+                        ? `linear-gradient(to right, var(--color-primary, #6750a4) ${(audioCurrentTime / audioDuration) * 100}%, var(--color-outline-variant, #cac4d0) ${(audioCurrentTime / audioDuration) * 100}%)`
+                        : undefined
+                    }}
+                  />
+                  {/* Time labels */}
+                  <div className="flex justify-between text-[10px] font-mono text-on-surface-variant select-none">
+                    <span>{formatAudioTime(audioCurrentTime)}</span>
+                    <span>{formatAudioTime(audioDuration)}</span>
+                  </div>
                 </div>
-                <button className="text-on-surface-variant hover:text-primary transition-colors" aria-label="Volume">
-                  <span className="material-symbols-outlined text-[20px]">volume_up</span>
-                </button>
               </div>
             ) : (
               <p className="font-body-sm text-body-sm text-on-surface-variant italic">No recording available for this call.</p>

@@ -1,8 +1,8 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
-import { api } from '../services/api.js'
+import { api, fetchRecordingBlobUrl } from '../services/api.js'
 
 const CALL_STATUS_VARIANT = {
   Completed: 'success',
@@ -29,6 +29,63 @@ export default function CallLog() {
   
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const [playingCallId, setPlayingCallId] = useState(null)
+  const [loadingCallId, setLoadingCallId] = useState(null)
+  const audioRef = useRef(null)
+  const blobUrlRef = useRef(null)
+
+  // Cleanup audio and blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) audioRef.current.pause();
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
+  }, []);
+
+  const handlePlayToggle = async (call) => {
+    if (!call.hasRecording) return;
+
+    // Pause current audio if playing same track
+    if (playingCallId === call.id) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      setPlayingCallId(null);
+      return;
+    }
+
+    // Stop any previously playing audio
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    // Revoke previous blob URL to free memory
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+
+    setLoadingCallId(call.id);
+    try {
+      // Fetch with auth headers then create a local blob URL — new Audio() can't send auth headers
+      const blobUrl = await fetchRecordingBlobUrl(call.id);
+      blobUrlRef.current = blobUrl;
+      const audio = new Audio(blobUrl);
+      audioRef.current = audio;
+      audio.addEventListener('ended', () => setPlayingCallId(null));
+      audio.addEventListener('error', (e) => {
+        console.error('Audio playback error:', e);
+        setPlayingCallId(null);
+      });
+      await audio.play();
+      setPlayingCallId(call.id);
+    } catch (e) {
+      console.error('Failed to load/play recording:', e);
+    } finally {
+      setLoadingCallId(null);
+    }
+  };
 
   useEffect(() => {
     const cId = searchParams.get('campaignId')
@@ -70,7 +127,7 @@ export default function CallLog() {
 
   function handleExport() {
     const csvRows = [
-      ['Customer Name', 'Phone', 'Amount Due', 'Call Status', 'Payment Status', 'Duration', 'AI Summary']
+      ['Customer Name', 'Phone', 'Amount Due', 'Call Status', 'Payment Status', 'Duration', 'Credits Billed', 'AI Summary']
     ]
     filteredRows.forEach((row) => {
       csvRows.push([
@@ -80,6 +137,7 @@ export default function CallLog() {
         row.callStatus,
         row.paymentStatus,
         `"${row.duration}"`,
+        row.callStatus === 'Completed' ? (row.callAmount !== null ? row.callAmount : 0) : 0,
         `"${(row.summary || '').replace(/"/g, '""')}"`
       ])
     })
@@ -189,6 +247,7 @@ export default function CallLog() {
                 <th className="px-md py-sm font-medium">Call Status</th>
                 <th className="px-md py-sm font-medium">Payment Status</th>
                 <th className="px-md py-sm font-medium">Duration</th>
+                <th className="px-md py-sm font-medium">Credits Billed</th>
                 <th className="px-md py-sm font-medium">Feedback / Summary</th>
                 <th className="px-md py-sm font-medium text-center">Action</th>
               </tr>
@@ -209,7 +268,7 @@ export default function CallLog() {
                       {row.campaignName}
                     </button>
                   </td>
-                  <td className="px-md py-sm text-on-surface">${row.amount.toFixed(2)}</td>
+                  <td className="px-md py-sm text-on-surface">₹{row.amount.toFixed(2)}</td>
                   <td className="px-md py-sm">
                     <Badge variant={CALL_STATUS_VARIANT[row.callStatus]}>{row.callStatus}</Badge>
                   </td>
@@ -217,14 +276,20 @@ export default function CallLog() {
                     <Badge variant={PAYMENT_STATUS_VARIANT[row.paymentStatus]}>{row.paymentStatus}</Badge>
                   </td>
                   <td className="px-md py-sm text-on-surface-variant">{row.duration}</td>
+                  <td className="px-md py-sm text-on-surface font-medium">
+                    {row.callStatus === 'Completed' ? (row.callAmount !== null && row.callAmount !== undefined ? `${row.callAmount} credits` : '0 credits') : '--'}
+                  </td>
                   <td className="px-md py-sm">
                     <div className="flex items-center gap-2 max-w-xs text-on-surface-variant">
                       <button
-                        disabled={!row.hasRecording}
-                        className={row.hasRecording ? 'text-primary hover:opacity-80' : 'text-outline/50 cursor-not-allowed'}
-                        aria-label="Play recording"
+                        disabled={!row.hasRecording || loadingCallId === row.id}
+                        onClick={() => handlePlayToggle(row)}
+                        className={row.hasRecording ? 'text-primary hover:opacity-80 active:scale-90 transition-transform' : 'text-outline/50 cursor-not-allowed'}
+                        aria-label={playingCallId === row.id ? 'Pause recording' : loadingCallId === row.id ? 'Loading...' : 'Play recording'}
                       >
-                        <span className="material-symbols-outlined text-[18px]">play_circle</span>
+                        <span className="material-symbols-outlined text-[18px]">
+                          {loadingCallId === row.id ? 'hourglass_top' : playingCallId === row.id ? 'pause_circle' : 'play_circle'}
+                        </span>
                       </button>
                       <span className={`truncate ${!row.hasRecording ? 'italic text-outline' : ''}`} title={row.summary}>
                         {row.summary}

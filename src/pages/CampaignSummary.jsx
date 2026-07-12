@@ -34,19 +34,14 @@ export default function CampaignSummary() {
       await api.startCampaign(campaignId)
 
       // 2. Spawn the Pipecat voice bot in the background
-      let voiceUrl = 'http://localhost:7860'
       try {
-        const voiceRes = await api.startVoiceBot(campaignId)
-        voiceUrl = voiceRes.url || voiceUrl
+        await api.startVoiceBot(campaignId)
       } catch (voiceErr) {
         console.warn('Could not start voice bot:', voiceErr.message)
         // Non-fatal — campaign can still proceed in simulation mode
       }
 
-      // 3. Open Pipecat WebRTC UI in a new tab for the voice session
-      window.open(voiceUrl, '_blank', 'noopener,noreferrer')
-
-      // 4. Navigate to live dashboard
+      // 3. Navigate to live dashboard (No window.open needed for Vobiz Outbound calls!)
       navigate(`/campaigns/${campaignId}/live`)
     } catch (err) {
       setError(err.message || 'Failed to launch campaign')
@@ -70,9 +65,9 @@ export default function CampaignSummary() {
   const stats = [
     { label: 'Total Contacts', value: String(summary.totalContacts), icon: 'groups' },
     { label: 'Selected Contacts', value: String(summary.selectedContacts), icon: 'group_add' },
-    { label: 'Total Amount to Collect', value: `$${summary.totalAmountDue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: 'payments', valueClassName: 'text-primary' },
+    { label: 'Total Amount to Collect', value: `₹${summary.totalAmountDue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: 'payments', valueClassName: 'text-primary' },
     { label: 'Estimated Duration', value: `${summary.estimatedDurationMinutes} minutes`, icon: 'timer' },
-    { label: 'Average Outstanding', value: `$${summary.averageBill.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: 'receipt' },
+    { label: 'Average Outstanding', value: `₹${summary.averageBill.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, icon: 'receipt' },
     { label: 'Estimated Completion', value: `Today, ${formatTime}`, icon: 'event_available' },
   ];
 

@@ -168,7 +168,7 @@ export default function LiveCampaign() {
         <StatCard label="Connected & Talked" value={String(stats.completedCalls)} icon="done_all" />
         <StatCard label="Live Line Calls" value={String(stats.activeCalls)} icon="sync" />
         <StatCard label="Failed / No Answer" value={String(stats.failedCalls)} icon="error" valueClassName="text-error" />
-        <StatCard label="Collected Now" value={`$${stats.amountCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })}`} icon="payments" valueClassName="text-primary" />
+        <StatCard label="Collected Now" value={`₹${stats.amountCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })}`} icon="payments" valueClassName="text-primary" />
       </section>
 
       <section className="bg-surface-container-lowest shadow-ambient rounded-xl p-md flex flex-col gap-sm">

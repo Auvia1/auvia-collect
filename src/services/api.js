@@ -185,6 +185,17 @@ export const api = {
     });
   },
 
+  async getBillingHistory() {
+    return request('/settings/billing-history');
+  },
+
+  async rechargeCredits(credits, amount) {
+    return request('/settings/recharge', {
+      method: 'POST',
+      body: JSON.stringify({ credits, amount }),
+    });
+  },
+
   // Users
   async getUsers() {
     return request('/users');
@@ -226,4 +237,40 @@ export const api = {
   async getAdminClinicAuditLogs(id) {
     return request(`/admin/clinics/${id}/audit-logs`);
   },
+
+  async getAdminClinicActivityLogs(id) {
+    return request(`/admin/clinics/${id}/activity-logs`);
+  },
+
+  async getAdminClinicCreditTransactions(id) {
+    return request(`/admin/clinics/${id}/credit-transactions`);
+  },
+
+  async getAdminAnalytics(startDate, endDate) {
+    let query = '';
+    if (startDate && endDate) {
+      query = `?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
+    }
+    return request(`/admin/analytics${query}`);
+  },
 };
+
+/**
+ * Fetch a call recording via the authenticated proxy and return a Blob Object URL.
+ * new Audio() cannot send Authorization headers, so we must fetch the audio
+ * ourselves with the token, convert to a Blob, then create an object URL.
+ */
+export async function fetchRecordingBlobUrl(callId) {
+  const token = localStorage.getItem('auvia_token');
+  const response = await fetch(`/api/calls/${callId}/recording`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (!response.ok) {
+    throw new Error(`Recording fetch failed: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+

@@ -1,26 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { api } from '../services/api.js'
 
-// Strip any accidental markdown formatting (asterisks/underscores) from names
 function cleanName(raw) {
   return raw ? raw.replace(/\*/g, '').replace(/_/g, '').trim() : '\u2014'
-}
-
-function InitialsAvatar({ name }) {
-  const clean = cleanName(name)
-  const initials = clean.split(' ').map((w) => w[0] || '').slice(0, 2).join('').toUpperCase()
-  const palette = [
-    'bg-primary text-on-primary',
-    'bg-secondary text-on-secondary',
-    'bg-tertiary text-on-tertiary',
-    'bg-error text-on-error',
-  ]
-  const color = palette[clean.charCodeAt(0) % palette.length]
-  return (
-    <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${color}`}>
-      {initials || '?'}
-    </div>
-  )
 }
 
 function Toast({ message, type = 'info', onClose }) {
@@ -39,11 +21,18 @@ function Toast({ message, type = 'info', onClose }) {
 }
 
 export default function CallbackQueue() {
-  const [queue, setQueue]     = useState([])
+  const [queue, setQueue] = useState([])
   const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState('')
-  const [calling, setCalling] = useState({}) // rowId \u2192 true while bot spawning
-  const [toast, setToast]     = useState(null)
+  const [error, setError] = useState('')
+  const [calling, setCalling] = useState({}) // rowId → true while bot spawning
+  const [calledRows, setCalledRows] = useState({}) // rowId → true when call initiated
+  const [toast, setToast] = useState(null)
+  
+  // Search & Filter State
+  const [search, setSearch] = useState('')
+  const [filterType, setFilterType] = useState('all') // 'all' or 'my'
+  const [statusFilter, setStatusFilter] = useState('today_overdue') // 'all', 'today_overdue', 'today', 'overdue', 'future'
+  const [sortBy, setSortBy] = useState('soonest') // 'soonest', 'amount_high', 'amount_low'
 
   const showToast = useCallback((message, type = 'info') => {
     setToast({ message, type })
@@ -62,8 +51,11 @@ export default function CallbackQueue() {
     setCalling((prev) => ({ ...prev, [row.id]: true }))
     try {
       await api.startVoiceBot(row.campaignId || row.id, row.contactId)
-      showToast(`Bot started for ${cleanName(row.name)} \u2014 opening call UI\u2026`, 'success')
-      setTimeout(() => window.open('http://localhost:7860', '_blank'), 800)
+      showToast(`Outbound call placed successfully for ${cleanName(row.name)}!`, 'success')
+      setCalledRows(prev => ({ ...prev, [row.id]: true }))
+      setTimeout(() => {
+        setQueue(prev => prev.filter(item => item.id !== row.id))
+      }, 1500)
     } catch (err) {
       showToast(`Failed to start call: ${err.message}`, 'error')
     } finally {
@@ -71,12 +63,96 @@ export default function CallbackQueue() {
     }
   }
 
-  const dueToday = queue.filter((c) => c.callbackTime?.includes('Today')).length
+  // Helper date metrics
+  const stats = useMemo(() => {
+    let total = queue.length
+    let todayCount = 0
+    let overdueCount = 0
+
+    const todayStr = new Date().toDateString()
+    const todayMs = new Date().setHours(0,0,0,0)
+
+    queue.forEach(item => {
+      if (item.rawDate) {
+        const itemDate = new Date(item.rawDate)
+        const itemMs = new Date(item.rawDate).setHours(0,0,0,0)
+
+        if (itemDate.toDateString() === todayStr) {
+          todayCount++
+        } else if (itemMs < todayMs) {
+          overdueCount++
+        }
+      }
+    })
+
+    return { total, todayCount, overdueCount }
+  }, [queue])
+
+  // Get callback urgency classification
+  const getCallbackUrgency = (item) => {
+    if (!item.rawDate) return 'future'
+    const todayStr = new Date().toDateString()
+    const todayMs = new Date().setHours(0,0,0,0)
+    const itemDate = new Date(item.rawDate)
+    const itemMs = new Date(item.rawDate).setHours(0,0,0,0)
+
+    if (itemDate.toDateString() === todayStr) {
+      return 'today'
+    } else if (itemMs < todayMs) {
+      return 'overdue'
+    }
+    return 'future'
+  }
+
+  // Filter & Sort computation
+  const filteredAndSortedQueue = useMemo(() => {
+    let result = [...queue]
+
+    // 1. Search Query
+    const query = search.trim().toLowerCase()
+    if (query) {
+      result = result.filter(
+        item =>
+          item.name.toLowerCase().includes(query) ||
+          item.phone.includes(query) ||
+          item.context.toLowerCase().includes(query)
+      )
+    }
+
+    // 2. Dropdown Status Filter
+    if (statusFilter === 'today_overdue') {
+      result = result.filter(item => {
+        const urgency = getCallbackUrgency(item)
+        return urgency === 'today' || urgency === 'overdue'
+      })
+    } else if (statusFilter === 'today') {
+      result = result.filter(item => getCallbackUrgency(item) === 'today')
+    } else if (statusFilter === 'overdue') {
+      result = result.filter(item => getCallbackUrgency(item) === 'overdue')
+    } else if (statusFilter === 'future') {
+      result = result.filter(item => getCallbackUrgency(item) === 'future')
+    }
+
+    // 3. Sorting
+    if (sortBy === 'soonest') {
+      result.sort((a, b) => {
+        const ad = a.rawDate ? new Date(a.rawDate).getTime() : Infinity
+        const bd = b.rawDate ? new Date(b.rawDate).getTime() : Infinity
+        return ad - bd
+      })
+    } else if (sortBy === 'amount_high') {
+      result.sort((a, b) => b.amount - a.amount)
+    } else if (sortBy === 'amount_low') {
+      result.sort((a, b) => a.amount - b.amount)
+    }
+
+    return result
+  }, [queue, search, statusFilter, sortBy])
 
   if (loading) return (
     <div className="flex items-center justify-center py-24 gap-3 text-on-surface-variant">
       <span className="material-symbols-outlined animate-spin">progress_activity</span>
-      <span>Loading callback queue\u2026</span>
+      <span>Loading callback queue...</span>
     </div>
   )
 
@@ -88,96 +164,211 @@ export default function CallbackQueue() {
 
   return (
     <div className="flex flex-col gap-md pb-12">
-      <div>
-        <h1 className="font-display text-headline-xl text-on-surface">Callback Queue</h1>
-        <p className="text-body-md text-on-surface-variant mt-xs">
-          Customers who asked to be called back at a specific date and time.
-        </p>
+      {/* Header Section */}
+      <div className="flex flex-col gap-4">
+        <h2 className="font-display text-headline-xl text-primary font-bold">Callback Queue</h2>
+        {/* Summary Strip */}
+        <div className="bg-surface-container-lowest rounded-xl p-md shadow-soft border border-outline-variant/20 flex items-center gap-md flex-wrap">
+          <div className="flex items-baseline gap-3">
+            <span className="font-display text-headline-xl text-primary font-bold">{stats.total}</span>
+            <span className="font-body-lg text-body-lg text-on-surface font-medium">Total Scheduled</span>
+          </div>
+          <div className="h-8 w-px bg-outline-variant hidden sm:block"></div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+              <span className="font-body-md text-body-md text-on-surface-variant">{stats.todayCount} due today</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-error animate-pulse"></span>
+              <span className="font-body-md text-body-md text-on-surface-variant">{stats.overdueCount} overdue</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {dueToday > 0 && (
-        <div className="bg-primary-fixed border border-primary-fixed-dim rounded-lg p-sm flex items-center gap-sm">
-          <span className="material-symbols-outlined text-on-primary-fixed-variant">info</span>
-          <span className="text-sm text-on-primary-fixed-variant">
-            <strong>{dueToday}</strong> callback{dueToday !== 1 ? 's' : ''} scheduled for today.
-          </span>
-        </div>
-      )}
-
-      <div className="bg-surface-container-lowest rounded-xl shadow-ambient overflow-hidden border border-outline-variant/20">
-        {queue.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 text-on-surface-variant">
-            <span className="material-symbols-outlined text-5xl opacity-30">event_available</span>
-            <p>No callbacks scheduled at this time.</p>
+      {/* Filter / Sort Bar */}
+      <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-4 bg-surface-container-lowest p-sm rounded-xl shadow-soft border border-outline-variant/20">
+        <div className="flex items-center gap-sm flex-1 flex-wrap sm:flex-nowrap">
+          {/* Toggle */}
+          <div className="flex bg-surface-container-low p-1 rounded-lg">
+            <button
+              onClick={() => setFilterType('all')}
+              className={`px-4 py-1.5 rounded-md font-label-md text-label-md transition-colors whitespace-nowrap ${
+                filterType === 'all'
+                  ? 'bg-surface-container-lowest shadow-sm text-primary font-bold'
+                  : 'text-on-surface-variant hover:text-primary'
+              }`}
+            >
+              All Callbacks
+            </button>
+            <button
+              onClick={() => setFilterType('my')}
+              className={`px-4 py-1.5 rounded-md font-label-md text-label-md transition-colors whitespace-nowrap ${
+                filterType === 'my'
+                  ? 'bg-surface-container-lowest shadow-sm text-primary font-bold'
+                  : 'text-on-surface-variant hover:text-primary'
+              }`}
+            >
+              My Queue
+            </button>
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left whitespace-nowrap">
-              <thead>
-                <tr className="bg-surface-bright text-on-surface-variant text-xs uppercase tracking-wider">
-                  <th className="px-md py-sm font-medium">Customer</th>
-                  <th className="px-md py-sm font-medium">Amount Due</th>
-                  <th className="px-md py-sm font-medium">Payment Context</th>
-                  <th className="px-md py-sm font-medium">Callback Target</th>
-                  <th className="px-md py-sm font-medium">Call Notes</th>
-                  <th className="px-md py-sm font-medium text-center">Action</th>
+          {/* Search */}
+          <div className="relative flex-1 min-w-[200px]">
+            <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-outline-variant text-[20px]">search</span>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-10 pr-3 py-1.5 bg-surface-container-low border border-transparent rounded-lg font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-colors"
+              placeholder="Search customer or context..."
+              type="text"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center gap-sm flex-wrap sm:flex-nowrap">
+          {/* Filter Dropdown */}
+          <div className="relative flex-1 sm:flex-none">
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full sm:w-auto appearance-none pl-3 pr-8 py-1.5 bg-surface-container-lowest border border-outline-variant rounded-lg font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            >
+              <option value="all">All Dates</option>
+              <option value="today_overdue">Today &amp; Overdue</option>
+              <option value="today">Today only</option>
+              <option value="overdue">Overdue only</option>
+              <option value="future">Upcoming callbacks</option>
+            </select>
+          </div>
+          {/* Sort Dropdown */}
+          <div className="relative flex-1 sm:flex-none">
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="w-full sm:w-auto appearance-none pl-3 pr-8 py-1.5 bg-surface-container-lowest border border-outline-variant rounded-lg font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            >
+              <option value="soonest">Soonest Callback</option>
+              <option value="amount_high">Highest Amount Due</option>
+              <option value="amount_low">Lowest Amount Due</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Task Table Card */}
+      <div className="bg-surface-container-lowest rounded-2xl shadow-soft overflow-hidden border border-outline-variant/20">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse min-w-[800px]">
+            <thead>
+              <tr className="bg-surface-container-low border-b border-outline-variant/30">
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Customer Name</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Phone Number</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Amount Due</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Callback Date</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Time</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold">Original Call</th>
+                <th className="font-label-sm text-label-sm uppercase text-on-surface-variant px-6 py-4 font-semibold text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-outline-variant/20">
+              {filteredAndSortedQueue.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="p-8 text-center text-on-surface-variant">No callbacks scheduled matching filters.</td>
                 </tr>
-              </thead>
-              <tbody className="text-sm divide-y divide-surface-container-high">
-                {queue.map((row) => {
-                  const isToday  = row.callbackTime?.includes('Today')
+              ) : (
+                filteredAndSortedQueue.map((row) => {
+                  const urgency = getCallbackUrgency(row)
                   const isCalling = calling[row.id]
-                  const name     = cleanName(row.name)
+                  const hasBeenCalled = calledRows[row.id]
+                  const name = cleanName(row.name)
+
+                  // Account number derived from contactId last 6 chars
+                  const acctNo = row.contactId ? row.contactId.substring(row.contactId.length - 6).toUpperCase() : '000000'
+
+                  // original date formatting
+                  const originalDateStr = row.originalCallDate
+                    ? new Date(row.originalCallDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : '\u2014'
+
+                  let borderClass = 'border-l-4 border-transparent'
+                  let bgClass = 'hover:bg-surface-container-low/30'
+                  let badgeClass = ''
+
+                  if (urgency === 'overdue') {
+                    borderClass = 'border-l-4 border-error'
+                    bgClass = 'bg-[#fef2f2]/10 hover:bg-surface-container-low/50'
+                    badgeClass = 'bg-error/10 text-error font-bold'
+                  } else if (urgency === 'today') {
+                    borderClass = 'border-l-4 border-amber-500'
+                    bgClass = 'bg-[#fffbeb]/40 hover:bg-surface-container-low/50'
+                    badgeClass = 'bg-[#ffdcc4] text-[#6f3800] font-bold'
+                  }
+
                   return (
-                    <tr key={row.id} className="hover:bg-surface-bright transition-colors">
-                      <td className="px-md py-sm">
-                        <div className="flex items-center gap-sm">
-                          <InitialsAvatar name={name} />
-                          <div>
-                            <div className="font-medium text-on-surface">{name}</div>
-                            <div className="text-on-surface-variant text-xs">{row.phone}</div>
-                          </div>
+                    <tr
+                      key={row.id}
+                      className={`transition-colors border-b border-outline-variant/10 ${borderClass} ${bgClass} ${
+                        hasBeenCalled ? 'opacity-40 translate-x-2' : ''
+                      }`}
+                    >
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col">
+                          <span className="font-label-md text-label-md text-on-surface font-semibold">{name}</span>
+                          <span className="font-body-sm text-body-sm text-on-surface-variant">Acct: #{acctNo}</span>
                         </div>
                       </td>
-                      <td className="px-md py-sm text-on-surface font-semibold">
-                        ${Number(row.amount).toFixed(2)}
-                      </td>
-                      <td className="px-md py-sm text-on-surface-variant capitalize">
-                        {row.context || '\u2014'}
-                      </td>
-                      <td className="px-md py-sm">
-                        <span className={`inline-flex items-center gap-1 font-medium ${isToday ? 'text-primary' : 'text-on-surface-variant'}`}>
-                          <span className="material-symbols-outlined text-sm">{isToday ? 'today' : 'calendar_month'}</span>
-                          {row.callbackTime}
+                      <td className="px-6 py-4 font-body-md text-body-md text-on-surface">{row.phone}</td>
+                      <td className="px-6 py-4 font-label-md text-label-md text-on-surface font-bold">₹{row.amount.toFixed(2)}</td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full font-label-sm text-label-sm gap-1 ${badgeClass || 'bg-surface-container-highest text-on-surface-variant'}`}>
+                          <span className="material-symbols-outlined text-[14px]">
+                            {urgency === 'overdue' ? 'warning' : urgency === 'today' ? 'schedule' : 'event'}
+                          </span>
+                          {urgency === 'overdue' ? 'Overdue' : urgency === 'today' ? 'Today' : row.callbackTime.split(',')[0]}
                         </span>
                       </td>
-                      <td className="px-md py-sm text-on-surface-variant max-w-[220px] truncate" title={row.notes}>
-                        {row.notes || '\u2014'}
-                      </td>
-                      <td className="px-md py-sm text-center">
+                      <td className="px-6 py-4 font-body-md text-body-md text-on-surface">{row.time || '10:00 AM'}</td>
+                      <td className="px-6 py-4 font-body-sm text-body-sm text-on-surface-variant">{originalDateStr}</td>
+                      <td className="px-6 py-4 text-right">
                         <button
-                          id={`callback-call-${row.id}`}
                           onClick={() => handleCallNow(row)}
-                          disabled={isCalling}
-                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150
-                            ${isCalling
+                          disabled={isCalling || hasBeenCalled}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-150 ${
+                            hasBeenCalled
+                              ? 'bg-[#16a34a] text-white shadow-none cursor-default'
+                              : isCalling
                               ? 'bg-surface-container text-on-surface-variant cursor-not-allowed'
-                              : 'bg-primary text-on-primary hover:bg-primary/90 active:scale-95 shadow-sm hover:shadow-md'
-                            }`}
+                              : 'bg-primary text-on-primary hover:bg-primary/90 active:scale-95 shadow-sm'
+                          }`}
                         >
                           <span className="material-symbols-outlined text-sm">
-                            {isCalling ? 'hourglass_top' : 'call'}
+                            {hasBeenCalled ? 'check_circle' : isCalling ? 'hourglass_top' : 'call'}
                           </span>
-                          {isCalling ? 'Starting\u2026' : 'Call Now'}
+                          {hasBeenCalled ? 'Calling...' : isCalling ? 'Starting...' : 'Call Now'}
                         </button>
                       </td>
                     </tr>
                   )
-                })}
-              </tbody>
-            </table>
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+        {/* Pagination */}
+        <div className="px-6 py-4 border-t border-outline-variant/20 flex items-center justify-between bg-surface-container-lowest">
+          <span className="font-body-sm text-body-sm text-on-surface-variant">
+            Showing 1-{filteredAndSortedQueue.length} of {filteredAndSortedQueue.length} callbacks
+          </span>
+          <div className="flex gap-2">
+            <button className="p-1 rounded text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50" disabled>
+              <span className="material-symbols-outlined text-[20px]">chevron_left</span>
+            </button>
+            <button className="p-1 rounded text-on-surface-variant hover:bg-surface-container-low disabled:opacity-50" disabled>
+              <span className="material-symbols-outlined text-[20px]">chevron_right</span>
+            </button>
           </div>
-        )}
+        </div>
       </div>
 
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}

@@ -53,7 +53,7 @@ router.put('/clinics/:id', adminAuth, async (req, res) => {
     name, slug, address, city, state, phone, billing_email, status,
     razorpay_key_id, razorpay_key_secret, whatsapp_sender_id, sms_sender_id,
     preferred_channel, max_retry_attempts, retry_cooldown_hours,
-    calling_window_start, calling_window_end, max_concurrent_calls
+    calling_window_start, calling_window_end, max_concurrent_calls, credits
   } = req.body;
 
   try {
@@ -63,14 +63,15 @@ router.put('/clinics/:id', adminAuth, async (req, res) => {
            billing_email = $7, status = $8, razorpay_key_id = $9, razorpay_key_secret = $10,
            whatsapp_sender_id = $11, sms_sender_id = $12, preferred_channel = $13,
            max_retry_attempts = $14, retry_cooldown_hours = $15, calling_window_start = $16,
-           calling_window_end = $17, max_concurrent_calls = $18, updated_at = now()
-       WHERE id = $19
+           calling_window_end = $17, max_concurrent_calls = $18, credits = $19, updated_at = now()
+       WHERE id = $20
        RETURNING *`,
       [
         name, slug, address, city, state, phone, billing_email, status,
         razorpay_key_id, razorpay_key_secret, whatsapp_sender_id, sms_sender_id,
         preferred_channel, max_retry_attempts, retry_cooldown_hours,
         calling_window_start, calling_window_end, max_concurrent_calls,
+        credits !== undefined ? parseInt(credits) : 0,
         req.params.id
       ]
     );
@@ -120,6 +121,111 @@ router.get('/clinics/:id/audit-logs', adminAuth, async (req, res) => {
   } catch (err) {
     console.error('Admin API error fetching clinic audit logs:', err);
     res.status(500).json({ error: 'Failed to retrieve clinic audit logs' });
+  }
+});
+
+// 5a. GET /api/admin/clinics/:id/activity-logs - Fetch live activity logs for a specific clinic
+router.get('/clinics/:id/activity-logs', adminAuth, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM public.activity_log
+       WHERE clinic_id = $1
+       ORDER BY created_at DESC LIMIT 100`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Admin API error fetching clinic activity logs:', err);
+    res.status(500).json({ error: 'Failed to retrieve clinic activity logs' });
+  }
+});
+
+// 5b. GET /api/admin/clinics/:id/credit-transactions - Fetch credits transactions history for a specific clinic
+router.get('/clinics/:id/credit-transactions', adminAuth, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT * FROM public.credit_transactions
+       WHERE clinic_id = $1
+       ORDER BY created_at DESC LIMIT 100`,
+      [req.params.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Admin API error fetching clinic credit history:', err);
+    res.status(500).json({ error: 'Failed to retrieve clinic credit history' });
+  }
+});
+
+// 6. GET /api/admin/analytics - Fetch platform-wide cost analytics and breakdowns
+router.get('/analytics', adminAuth, async (req, res) => {
+  const { startDate, endDate } = req.query;
+  
+  let dateFilter = '';
+  const queryParams = [];
+  
+  if (startDate && endDate) {
+    dateFilter = 'WHERE ccb.created_at >= $1 AND ccb.created_at <= $2';
+    queryParams.push(new Date(startDate), new Date(endDate));
+  }
+
+  try {
+    // 1. Fetch aggregates
+    const aggregatesQuery = await db.query(
+      `SELECT 
+         COALESCE(SUM(total_cost), 0) as total_spend,
+         COUNT(*) as total_calls,
+         COALESCE(AVG(total_cost), 0) as avg_cost,
+         COALESCE(AVG(duration_seconds), 0) as avg_duration,
+         COALESCE(SUM(stt_cost), 0) as total_stt,
+         COALESCE(SUM(tts_cost), 0) as total_tts,
+         COALESCE(SUM(llm_in_cost), 0) as total_llm_in,
+         COALESCE(SUM(llm_out_cost), 0) as total_llm_out,
+         COALESCE(SUM(telephony_cost), 0) as total_telephony,
+         COALESCE(SUM(other_cost), 0) as total_other,
+         COALESCE(SUM(llm_in_tokens), 0) as total_llm_in_tokens,
+         COALESCE(SUM(llm_out_tokens), 0) as total_llm_out_tokens,
+         COALESCE(SUM(tts_chars), 0) as total_tts_chars,
+         COALESCE(SUM(credits_billed), 0) as total_credits_billed
+       FROM public.call_cost_breakdown ccb
+       ${dateFilter}`,
+      queryParams
+    );
+
+    const aggregates = aggregatesQuery.rows[0];
+
+    // 2. Fetch call breakdowns list
+    const breakdownsQuery = await db.query(
+      `SELECT ccb.*, cl.name as clinic_name
+       FROM public.call_cost_breakdown ccb
+       LEFT JOIN public.clinics cl ON cl.id = ccb.clinic_id
+       ${dateFilter}
+       ORDER BY ccb.created_at DESC LIMIT 100`,
+      queryParams
+    );
+
+    // 3. Fetch margins / profits comparison
+    const marginsQuery = await db.query(
+      `SELECT 
+         cl.name as clinic_name,
+         COUNT(ccb.id) as call_count,
+         COALESCE(SUM(ccb.credits_billed), 0) as credits_billed,
+         COALESCE(SUM(ccb.total_cost), 0) as total_cost,
+         (COALESCE(SUM(ccb.credits_billed), 0) - COALESCE(SUM(ccb.total_cost), 0)) as profit_margin
+       FROM public.call_cost_breakdown ccb
+       LEFT JOIN public.clinics cl ON cl.id = ccb.clinic_id
+       GROUP BY cl.name
+       ORDER BY profit_margin DESC`,
+      []
+    );
+
+    res.json({
+      aggregates,
+      breakdowns: breakdownsQuery.rows,
+      margins: marginsQuery.rows
+    });
+  } catch (err) {
+    console.error('Admin API error fetching analytics:', err);
+    res.status(500).json({ error: 'Failed to retrieve platform cost analytics' });
   }
 });
 

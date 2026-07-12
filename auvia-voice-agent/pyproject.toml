@@ -1,3 +1,7 @@
+[project]
+name = "auvia-voice-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
 dependencies = [
     "aiortc>=1.14.0",
     "fastapi>=0.135.2",
@@ -6,4 +10,7 @@ dependencies = [
     "loguru>=0.7.3",
     "pipecat-ai[daily,google,runner,sarvam,smallest,webrtc]>=1.0.0",
     "python-dotenv>=1.2.2",
+    "asyncpg>=0.29.0",
+    "redis>=5.0.0",
+    "websockets>=16.0",
 ]

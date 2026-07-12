@@ -12,7 +12,7 @@ const TRANSCRIPTS = {
   paid_now: [
     { from: 'agent', text: 'Hello, this is Auvia Wellness. Am I speaking with {{name}}?', at_seconds: 2 },
     { from: 'customer', text: 'Yes, this is {{name}}. What is this about?', at_seconds: 5 },
-    { from: 'agent', text: 'Hi! I am calling regarding a pending balance of ${{amount}} for your {{context}}. We can send a secure SMS payment link if you would like to clear this now.', at_seconds: 12 },
+    { from: 'agent', text: 'Hi! I am calling regarding a pending balance of ₹{{amount}} for your {{context}}. We can send a secure SMS payment link if you would like to clear this now.', at_seconds: 12 },
     { from: 'customer', text: 'Oh yes, I received the email but forgot. Please send the link, I will pay it right now.', at_seconds: 20 },
     { from: 'agent', text: 'Excellent, sent. Let me know when you receive it.', at_seconds: 27 },
     { from: 'customer', text: 'Just got it. Clicking now... entering UPI pin... okay, it says success!', at_seconds: 45 },
@@ -22,13 +22,13 @@ const TRANSCRIPTS = {
   link_sent: [
     { from: 'agent', text: 'Hello, is this {{name}}?', at_seconds: 2 },
     { from: 'customer', text: 'Yes, who is this?', at_seconds: 4 },
-    { from: 'agent', text: 'I am calling from Auvia Wellness regarding a balance of ${{amount}} for your {{context}}. We would like to text you a quick link to settle it.', at_seconds: 10 },
+    { from: 'agent', text: 'I am calling from Auvia Wellness regarding a balance of ₹{{amount}} for your {{context}}. We would like to text you a quick link to settle it.', at_seconds: 10 },
     { from: 'customer', text: 'Sure, send it over. I am currently driving, but I will pay it as soon as I get home.', at_seconds: 18 },
     { from: 'agent', text: 'Absolutely. The link is sent to this number. Have a safe drive!', at_seconds: 25 },
     { from: 'customer', text: 'Thanks, talk to you later.', at_seconds: 30 }
   ],
   call_later: [
-    { from: 'agent', text: 'Hello {{name}}? I am calling from Auvia Wellness regarding your outstanding {{context}} of ${{amount}}.', at_seconds: 3 },
+    { from: 'agent', text: 'Hello {{name}}? I am calling from Auvia Wellness regarding your outstanding {{context}} of ₹{{amount}}.', at_seconds: 3 },
     { from: 'customer', text: 'Hi, I am actually in a meeting right now. Can you call me back later this afternoon?', at_seconds: 10 },
     { from: 'agent', text: 'Of course! Would 4:00 PM today work for you?', at_seconds: 15 },
     { from: 'customer', text: 'Yes, 4:00 PM works. Please call me then.', at_seconds: 20 },
@@ -43,8 +43,8 @@ const TRANSCRIPTS = {
 };
 
 const SUMMARIES = {
-  paid_now: 'Spoke with {{name}}. Patient was helpful and paid the outstanding balance of ${{amount}} for their {{context}} immediately over the phone using the sent Razorpay SMS link.',
-  link_sent: 'Spoke with {{name}}. Patient was busy but cooperative. Sent payment link of ${{amount}} for their {{context}} via WhatsApp. Patient promised to pay later today.',
+  paid_now: 'Spoke with {{name}}. Patient was helpful and paid the outstanding balance of ₹{{amount}} for their {{context}} immediately over the phone using the sent Razorpay SMS link.',
+  link_sent: 'Spoke with {{name}}. Patient was busy but cooperative. Sent payment link of ₹{{amount}} for their {{context}} via WhatsApp. Patient promised to pay later today.',
   call_later: 'Patient {{name}} was busy and requested a callback regarding their {{context}}. Scheduled callback for today/tomorrow.',
   already_paid: 'Spoke with {{name}}. Patient claims the {{context}} bill was already cleared via their insurer. Marked for billing audit.',
   not_interested: 'Patient {{name}} declined to pay for their {{context}}, stating insurance should cover the full charges. Billing dispute noted.',
@@ -167,19 +167,78 @@ export function startCampaignSimulation(campaignId, clinicId) {
             .replace(/{{context}}/g, formattedCtx);
 
           const durationSeconds = callStatus === 'completed' ? pick([45, 60, 95, 120, 180]) : pick([5, 12]);
-          const recordingUrl = callStatus === 'completed' ? 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg' : null;
+                    const recordingUrl = callStatus === 'completed' ? 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg' : null;
+          const creditsBilled = Math.ceil(durationSeconds / 60);
 
-          console.log(`[Simulator] Call ${callId} completed with outcome: ${outcome || callStatus}`);
+          const inr_multiplier = 94.94;
+          const telephony_cost = creditsBilled * 0.0071 * inr_multiplier;
+          const stt_cost = creditsBilled * 0.0024 * inr_multiplier;
+          const ttsCharCount = callStatus === 'completed' ? (durationSeconds * 5) : 0;
+          const tts_cost = ttsCharCount * (0.02 / 1000.0) * inr_multiplier;
+          const llm_cost = (ttsCharCount / 4.0) * (0.015 / 1000.0) * inr_multiplier;
+          const total_cost = telephony_cost + stt_cost + tts_cost + llm_cost;
+
+          const billingObj = {
+            duration: durationSeconds,
+            stt_cost: stt_cost,
+            tts_cost: tts_cost,
+            llm_cost: llm_cost,
+            telephony_cost: telephony_cost,
+            total_cost: total_cost,
+            credits_billed: creditsBilled
+          };
+
+          console.log(`[Simulator] Call ${callId} completed with outcome: ${outcome || callStatus} | Credits billed: ${creditsBilled}`);
 
           // Update call in DB
           await db.query(
             `UPDATE calls 
              SET call_status = $1, outcome = $2, sentiment = $3, duration_seconds = $4,
                  recording_url = $5, transcript = $6, ai_summary = $7,
-                 callback_date = $8, callback_time = $9, decline_reason = $10, ended_at = now()
-             WHERE id = $11`,
-            [callStatus, outcome, sentiment, durationSeconds, recordingUrl, transcriptText, summary, callbackDate, callbackTime, declineReason, callId]
+                 callback_date = $8, callback_time = $9, decline_reason = $10, ended_at = now(),
+                 amount = $11, billing = $12
+             WHERE id = $13`,
+            [callStatus, outcome, sentiment, durationSeconds, recordingUrl, transcriptText, summary, callbackDate, callbackTime, declineReason, creditsBilled, JSON.stringify(billingObj), callId]
           );
+
+          // Deduct credits from clinic
+          if (creditsBilled > 0) {
+            await db.query(
+              `UPDATE clinics SET credits = COALESCE(credits, 0) - $1 WHERE id = $2`,
+              [creditsBilled, clinicId]
+            );
+          }
+
+          // Insert call cost breakdown for cost analytics
+          try {
+            await db.query(
+              `INSERT INTO public.call_cost_breakdown (
+                 call_id, clinic_id, duration_seconds, duration_minutes, stt_cost, stt_provider, 
+                 tts_cost, tts_provider, llm_in_cost, llm_out_cost, telephony_cost, telephony_provider, 
+                 other_cost, credits_billed, total_cost, bill
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+              [
+                callId,
+                clinicId,
+                durationSeconds,
+                durationSeconds / 60.0,
+                stt_cost,
+                'sarvam',
+                tts_cost,
+                'smallest',
+                llm_cost * 0.4,
+                llm_cost * 0.6,
+                telephony_cost,
+                'vobiz',
+                0, // other_cost
+                creditsBilled,
+                total_cost,
+                JSON.stringify(billingObj)
+              ]
+            );
+          } catch (cbErr) {
+            console.error('[Simulator] Error inserting call cost breakdown:', cbErr);
+          }
 
           // Handle Razorpay payment link simulation
           if (outcome === 'paid_now') {
@@ -220,7 +279,7 @@ export function startCampaignSimulation(campaignId, clinicId) {
                    VALUES ($1, $2, $3, $4, $5, 'card', now())`,
                   [plinkId, contact.id, clinicId, `pay_sim_${Math.random().toString(36).substring(2, 10)}`, amount]
                 );
-                console.log(`[Simulator] Customer ${contact.name} paid link: ${rzpLinkId} ($${amount})!`);
+                console.log(`[Simulator] Customer ${contact.name} paid link: ${rzpLinkId} (₹${amount})!`);
               } catch (e) {
                 console.error('[Simulator] Delay payment error:', e);
               }

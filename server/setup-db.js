@@ -198,12 +198,12 @@ try {
       outcome: 'paid_now',
       duration_seconds: 165,
       recording_url: 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg',
-      ai_summary: 'Patient Eleanor Rigby agreed to pay her consultation fee of $125.00. Payment link was sent during the call, and she completed the transaction immediately.',
+      ai_summary: 'Patient Eleanor Rigby agreed to pay her consultation fee of ₹125.00. Payment link was sent during the call, and she completed the transaction immediately.',
       sentiment: 'friendly',
       transcript: JSON.stringify([
         { from: 'agent', text: 'Hello, am I speaking with Eleanor Rigby?', at_seconds: 2 },
         { from: 'customer', text: 'Yes, this is Eleanor. Who is calling?', at_seconds: 5 },
-        { from: 'agent', text: 'Hi Eleanor, I am calling from Auvia Wellness Center regarding a pending consultation fee of $125 from your visit on June 15th.', at_seconds: 10 },
+        { from: 'agent', text: 'Hi Eleanor, I am calling from Auvia Wellness Center regarding a pending consultation fee of ₹125 from your visit on June 15th.', at_seconds: 10 },
         { from: 'customer', text: 'Ah, yes. I completely forgot about that invoice. Can I pay it over the phone or online?', at_seconds: 18 },
         { from: 'agent', text: 'I can trigger a secure payment link directly to your mobile phone via SMS or WhatsApp, which you can pay using UPI, card, or net banking.', at_seconds: 25 },
         { from: 'customer', text: 'That would be great, please send it to this number.', at_seconds: 32 },
@@ -240,7 +240,7 @@ try {
       transcript: JSON.stringify([
         { from: 'agent', text: 'Hello, this is Auvia Wellness. May I speak to Jude?', at_seconds: 3 },
         { from: 'customer', text: 'Speaking. What is this about?', at_seconds: 6 },
-        { from: 'agent', text: 'Jude, we are checking on the copay amount of $75.50 remaining from your session last month.', at_seconds: 12 },
+        { from: 'agent', text: 'Jude, we are checking on the copay amount of ₹75.50 remaining from your session last month.', at_seconds: 12 },
         { from: 'customer', text: 'Oh, okay. Can you send me the invoice via email or WhatsApp so I can pay it tonight?', at_seconds: 22 },
         { from: 'agent', text: 'Absolutely, I am sending a Razorpay link to this number right now.', at_seconds: 28 },
         { from: 'customer', text: 'Okay, I will check it and clear it later today.', at_seconds: 35 }
@@ -268,7 +268,7 @@ try {
       outcome: 'paid_now',
       duration_seconds: 120,
       recording_url: 'https://actions.google.com/sounds/v1/ambiences/morning_birds.ogg',
-      ai_summary: 'Rita paid her $110.00 lab charges immediately via WhatsApp link.',
+      ai_summary: 'Rita paid her ₹110.00 lab charges immediately via WhatsApp link.',
       sentiment: 'happy',
       transcript: JSON.stringify([])
     }

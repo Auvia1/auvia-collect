@@ -14,8 +14,10 @@ import CustomerDetail from './pages/CustomerDetail.jsx'
 import CampaignReport from './pages/CampaignReport.jsx'
 import CallbackQueue from './pages/CallbackQueue.jsx'
 import SettingsPage from './pages/Settings.jsx'
-import UserManagement from './pages/UserManagement.jsx'
 import PlatformAdmin from './pages/PlatformAdmin.jsx'
+import CostAnalytics from './pages/CostAnalytics.jsx'
+import BuyCredits from './pages/BuyCredits.jsx'
+import BillingHistory from './pages/BillingHistory.jsx'
 
 // Smart root redirect: send platform admins to /admin, clinics to /campaigns
 function RootRedirect() {
@@ -38,6 +40,7 @@ export default function App() {
         {/* ── PLATFORM ADMIN PORTAL (NexoVAI only) ── */}
         <Route element={<AdminLayout />}>
           <Route path="/admin" element={<PlatformAdmin />} />
+          <Route path="/admin/analytics" element={<CostAnalytics />} />
         </Route>
 
         {/* ── CLINIC DASHBOARD (Resplice, Auvia Medical, etc.) ── */}
@@ -52,7 +55,8 @@ export default function App() {
           <Route path="/call-log/:customerId" element={<CustomerDetail />} />
           <Route path="/callback-queue" element={<CallbackQueue />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/users" element={<UserManagement />} />
+          <Route path="/buy-credits" element={<BuyCredits />} />
+          <Route path="/billing-history" element={<BillingHistory />} />
         </Route>
 
         {/* Smart root + catch-all */}

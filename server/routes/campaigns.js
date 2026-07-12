@@ -381,9 +381,11 @@ router.get('/:id/live', authMiddleware, async (req, res) => {
     );
     const amountCollected = parseFloat(payRes.rows[0]?.amount_collected || 0);
 
-    // 4. Get active live call lines (calls that are in_progress or recently dialed)
     const activeCallsRes = await db.query(
-      `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, c.call_status, c.duration_seconds
+      `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, c.call_status,
+              CASE WHEN c.call_status = 'in_progress' AND c.started_at IS NOT NULL
+                   THEN EXTRACT(EPOCH FROM (now() - c.started_at))::int
+                   ELSE COALESCE(c.duration_seconds, 0) END as duration_seconds
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
        WHERE c.campaign_id = $1 AND c.call_status IN ('in_progress', 'queued')
@@ -519,6 +521,67 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
     // Total selected contacts (the fixed denominator)
     const totalSelected = parseInt(campaign.selected_contacts) || 0;
 
+    // 6. Calls list for this campaign
+    const callsResult = await db.query(
+      `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
+              c.campaign_id, camp.name as campaign_name, c.call_status, c.duration_seconds,
+              c.ai_summary, c.recording_url, c.amount, c.vobiz_call_sid, pl.status as payment_link_status
+       FROM calls c
+       JOIN contacts cont ON cont.id = c.contact_id
+       JOIN campaigns camp ON camp.id = c.campaign_id
+       LEFT JOIN payment_links pl ON pl.call_id = c.id
+       WHERE c.campaign_id = $1 AND c.clinic_id = $2
+       ORDER BY c.created_at DESC`,
+      [req.params.id, req.clinicId]
+    );
+
+    const formatDuration = (seconds) => {
+      if (!seconds) return '0m 00s';
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m}m ${s.toString().padStart(2, '0')}s`;
+    };
+
+    const getCallStatusLabel = (status) => {
+      switch (status) {
+        case 'completed': return 'Completed';
+        case 'in_progress': return 'In Progress';
+        case 'queued': return 'Queued';
+        case 'not_answered': return 'Not Answered';
+        case 'failed': return 'Failed';
+        default: return 'Unknown';
+      }
+    };
+
+    const getPaymentStatusLabel = (linkStatus) => {
+      switch (linkStatus) {
+        case 'paid': return 'Paid';
+        case 'sent':
+        case 'viewed': return 'Payment Link Sent';
+        case 'created': return 'Link Created';
+        case 'expired': return 'Link Expired';
+        case 'cancelled': return 'Link Cancelled';
+        default: return 'Unpaid';
+      }
+    };
+
+    const formattedCalls = callsResult.rows.map((row) => ({
+      id: row.id,
+      name: row.customer_name,
+      phone: row.customer_phone,
+      amount: parseFloat(row.amount_due),
+      callAmount: row.amount ? parseFloat(row.amount) : null,
+      campaignId: row.campaign_id,
+      campaignName: row.campaign_name,
+      callStatus: getCallStatusLabel(row.call_status),
+      paymentStatus: getPaymentStatusLabel(row.payment_link_status),
+      duration: formatDuration(row.duration_seconds),
+      summary: row.ai_summary || 'No summary available.',
+      hasRecording: !!row.recording_url,
+      recordingUrl: row.recording_url || null,
+      vobizCallSid: row.vobiz_call_sid || null,
+    }));
+
     res.json({
       campaignName: campaign.name,
       status: campaign.status,
@@ -543,7 +606,8 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
         positive: (sentiments['friendly'] || 0) + (sentiments['happy'] || 0),
         neutral: (sentiments['neutral'] || 0) + (sentiments['cooperative'] || 0),
         negative: (sentiments['frustrated'] || 0) + (sentiments['uncooperative'] || 0),
-      }
+      },
+      calls: formattedCalls
     });
   } catch (err) {
     console.error('Error fetching campaign report:', err);

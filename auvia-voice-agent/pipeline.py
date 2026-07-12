@@ -1,15 +1,21 @@
+#pipeline.py
 import os
 import sys
 import json
 import time
-import wave
+import math
+import datetime
 import uuid
 import asyncio
 import httpx
 from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
-from pipecat.frames.frames import AudioRawFrame, CancelFrame, EndFrame, Frame, LLMRunFrame, StartFrame
+
+from pipecat.frames.frames import (
+    AudioRawFrame, CancelFrame, EndFrame, Frame, LLMRunFrame, StartFrame, 
+    UserStartedSpeakingFrame, TextFrame, TranscriptionFrame
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
@@ -24,111 +30,41 @@ from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.services.smallest.tts import SmallestTTSService, SmallestTTSModel
+from tools.vobiz_serializer import VobizFrameSerializer
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 
-load_dotenv(override=True)
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+
+
+load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 # ─── Force Google SDK to use our .env key, not any system-level GOOGLE_API_KEY ──
-# The google-genai SDK prefers GOOGLE_API_KEY over any explicitly passed api_key
-# when GOOGLE_API_KEY is set as a Windows system environment variable.
-# By syncing it here, we ensure switching GEMINI_API_KEY in .env always takes effect.
 _gemini_key = os.getenv("GEMINI_API_KEY")
 if _gemini_key:
     os.environ["GOOGLE_API_KEY"] = _gemini_key
-
 
 # ─── Config injected by the Node server via env ───────────────────────────────
 CAMPAIGN_ID = os.getenv("AUVIA_CAMPAIGN_ID")
 CLINIC_ID = os.getenv("AUVIA_CLINIC_ID")
 LEAD_CALLBACK_URL = os.getenv("AUVIA_LEAD_CALLBACK_URL", "http://localhost:5001/api/voice/lead")
 BOT_SECRET = os.getenv("AUVIA_BOT_SECRET", "auvia_bot_secret_2025")
-CALL_ID = os.getenv("CALL_ID", "")                    # existing DB call ID
+CALL_ID = os.getenv("CALL_ID", "")                    
 
-# ─── Contact-specific data for outbound call ─────────────────────────────────
-CONTACT_ID     = os.getenv("CONTACT_ID", "")          # existing DB contact UUID
-CONTACT_NAME   = os.getenv("CONTACT_NAME", "")       # e.g. "Ayush Kumar"
-CONTACT_PHONE  = os.getenv("CONTACT_PHONE", "")      # e.g. "+9267949726"
-CONTACT_AMOUNT = os.getenv("CONTACT_AMOUNT", "")     # e.g. "1.00"
-CONTACT_REASON = os.getenv("CONTACT_PAYMENT_REASON", "outstanding balance")  # e.g. "consultation fee"
+CONTACT_ID     = os.getenv("CONTACT_ID", "")          
+CONTACT_NAME   = os.getenv("CONTACT_NAME", "")       
+CONTACT_PHONE  = os.getenv("CONTACT_PHONE", "")      
+CONTACT_AMOUNT = os.getenv("CONTACT_AMOUNT", "")     
+CONTACT_REASON = os.getenv("CONTACT_PAYMENT_REASON", "outstanding balance")  
+CLINIC_NAME    = os.getenv("AUVIA_CLINIC_NAME", "Auvia Wellness")  
 
-# ─── Recordings directory ────────────────────────────────────────────────────
-RECORDINGS_DIR = Path(__file__).parent / "recordings"
-RECORDINGS_DIR.mkdir(exist_ok=True)
 NODE_PORT = os.getenv("PORT", "5001")
-
-
-# ─── Audio recording ───────────────────────────────────────────────────────
-class SharedAudioBuffer:
-    """A single PCM buffer + WAV writer shared by two AudioTap processors
-    (one on the mic path, one on the TTS path).
-
-    Sample rate is auto-detected from the first AudioRawFrame written so
-    the WAV header always matches the actual audio, preventing slo-mo/fast-mo
-    playback caused by a hardcoded rate mismatch.
-    """
-
-    def __init__(self, filepath: str):
-        self.filepath = filepath
-        self.sample_rate: int = 0   # detected from first frame
-        self._buf = bytearray()
-
-    def write(self, data: bytes, sample_rate: int = 0):
-        """Append PCM bytes. On the very first call, lock in the sample rate."""
-        if self.sample_rate == 0 and sample_rate:
-            self.sample_rate = sample_rate
-            logger.debug(f"AudioBuffer: locked sample_rate={sample_rate} Hz from first frame")
-        self._buf.extend(data)
-
-    def save(self) -> bool:
-        if not self._buf:
-            logger.warning("AudioBuffer: no audio captured — skipping WAV write")
-            return False
-        rate = self.sample_rate or 16000   # fallback if no frame ever arrived
-        try:
-            with wave.open(self.filepath, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)       # 16-bit LE PCM
-                wf.setframerate(rate)
-                wf.writeframes(bytes(self._buf))
-            logger.info(f"AudioBuffer: saved {len(self._buf)/1024:.1f} KB @ {rate} Hz → {self.filepath}")
-            return True
-        except Exception as e:
-            logger.error(f"AudioBuffer: WAV write failed: {e}")
-            return False
-
-
-class AudioTap(FrameProcessor):
-    """Lightweight pass-through FrameProcessor that writes AudioRawFrame bytes
-    into a SharedAudioBuffer without causing double-push.
-
-    KEY: We do NOT call super().process_frame() — that would auto-forward the frame
-    through the base-class internal routing AND StartFrames would double-fire.
-    Instead we forward ALL frames manually via push_frame(), and only additionally
-    write AudioRawFrames into the buffer.
-    """
-
-    def __init__(self, buf: SharedAudioBuffer, label: str = ""):
-        super().__init__()
-        self._buf = buf
-        self._label = label
-
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        # IMPORTANT: super().process_frame() only updates internal lifecycle state
-        # (_started flag etc.) — it does NOT push/forward any frame automatically.
-        # push_frame() is ALWAYS the sole mechanism for forwarding frames downstream.
-        await super().process_frame(frame, direction)  # update lifecycle state
-        if isinstance(frame, AudioRawFrame) and frame.audio:
-            # Pass frame.sample_rate so the buffer auto-detects the correct rate
-            # on the very first write — prevents slo-mo WAV playback.
-            self._buf.write(frame.audio, sample_rate=frame.sample_rate)
-        await self.push_frame(frame, direction)  # always forward
 
 
 # ─── Conversation transcript collector ───────────────────────────────────────
 class ConversationTracker:
-    """Accumulates the full conversation so we can extract lead info at the end."""
-
     def __init__(self):
-        self.turns: list[dict] = []   # [{ "from": "agent"|"user", "text": str, "at_seconds": float }]
+        self.turns: list[dict] = []   
         self.call_start: float = time.time()
 
     def add(self, speaker: str, text: str):
@@ -146,14 +82,14 @@ class ConversationTracker:
 
 
 async def extract_lead_from_transcript(tracker: ConversationTracker, llm: GoogleLLMService) -> dict:
-    """
-    Ask the LLM to extract structured lead data from the conversation transcript.
-    Returns a dict with name, phone, amountDue, outcome, sentiment, aiSummary, notes.
-    """
     if not tracker.turns:
         return {}
 
+    today_str = datetime.date.today().strftime('%A, %B %d, %Y')
+
     extraction_prompt = f"""You are an AI assistant that extracts structured lead data from voice call transcripts.
+
+Today's date is {today_str}. Use this as the reference date to resolve relative date expressions.
 
 TRANSCRIPT:
 {tracker.full_text()}
@@ -168,10 +104,11 @@ Respond ONLY with a valid JSON object, no markdown, no explanation:
   "outcome": "one of: paid_now | link_sent | call_later | already_paid | not_interested | other",
   "sentiment": "one of: friendly | happy | neutral | cooperative | frustrated | uncooperative",
   "aiSummary": "1-2 sentence summary of the call outcome",
-  "notes": "any additional notes about the conversation or null"
+  "notes": "any additional notes about the conversation or null",
+  "callbackDate": "YYYY-MM-DD formatted callback date if outcome is call_later, else null",
+  "callbackTime": "HH:MM:SS formatted callback time if outcome is call_later, else null"
 }}"""
 
-    # Use a direct API call for extraction (cheaper than running through full pipeline)
     try:
         from google import genai
         from google.genai import types as genai_types
@@ -184,7 +121,6 @@ Respond ONLY with a valid JSON object, no markdown, no explanation:
             ),
         )
         raw = response.text.strip()
-        # Strip markdown code fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -200,8 +136,7 @@ Respond ONLY with a valid JSON object, no markdown, no explanation:
         }
 
 
-async def post_lead_to_server(lead_data: dict, tracker: ConversationTracker, recording_url: str | None = None):
-    """POST extracted lead data to the Node server's /api/voice/lead endpoint."""
+async def post_lead_to_server(lead_data: dict, tracker: ConversationTracker, recording_url: str | None = None, breakdown: dict | None = None):
     if not CAMPAIGN_ID or not CLINIC_ID:
         logger.warning("AUVIA_CAMPAIGN_ID or AUVIA_CLINIC_ID not set — skipping lead capture")
         return
@@ -214,6 +149,7 @@ async def post_lead_to_server(lead_data: dict, tracker: ConversationTracker, rec
         "durationSeconds": tracker.duration(),
         "transcript": tracker.turns,
         "recordingUrl": recording_url,
+        "billing": breakdown,
         **lead_data,
     }
 
@@ -232,9 +168,128 @@ async def post_lead_to_server(lead_data: dict, tracker: ConversationTracker, rec
         logger.error(f"Failed to POST lead to server: {e}")
 
 
+# =============================================================================
+# 🛡️ DEFENSIVE PROCESSORS
+# =============================================================================
+
+class PipecatBugFixProcessor(FrameProcessor):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, AudioRawFrame):
+            if not hasattr(frame, 'pts'): frame.pts = None
+            if not hasattr(frame, 'transport_destination'): frame.transport_destination = None
+            if not hasattr(frame, 'id'): frame.id = "fixed-audio-frame-id"
+            if not hasattr(frame, 'broadcast_sibling_id'): frame.broadcast_sibling_id = None
+        await self.push_frame(frame, direction)
+
+class STTTextCleanerProcessor(FrameProcessor):
+    """Filters out short garbage transcriptions caused by background noise."""
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TranscriptionFrame):
+            stt_raw_text = frame.text.strip().lower()
+            
+            # 🛡️ STRICTER BACKGROUND CHATTER FILTER
+            if len(stt_raw_text) <= 8 and len(stt_raw_text.split()) < 2:
+                logger.warning(f"🛡️ Ignored likely background chatter: '{stt_raw_text}'")
+                return
+            if len(stt_raw_text) <= 2:
+                return
+                
+        await self.push_frame(frame, direction)
+
+class ContextSilenceFilter(FrameProcessor):
+    """Swallows stale LLM text right after an interruption to prevent awkward overlaps."""
+    def __init__(self):
+        super().__init__()
+        self.recently_interrupted = False
+        self.interruption_time = 0.0
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self.recently_interrupted = True
+            self.interruption_time = time.time()
+
+        if isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM:
+            # 🛡️ INCREASED GRACE PERIOD: 0.8s
+            if self.recently_interrupted and (time.time() - self.interruption_time < 0.8):
+                logger.debug("🛡️ Swallowing stray text frame to protect TTS context ID.")
+                return
+
+        await super().process_frame(frame, direction)
+        await self.push_frame(frame, direction)
+
+
+class BillingTracker(FrameProcessor):
+    def __init__(self, bot_context, session_identifier):
+        super().__init__()
+        self.tts_char_count = 0
+        self.llm_out_tokens = 0
+        self.timer_start = time.time()
+        self.bot_context = bot_context
+        self.session_identifier = session_identifier
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TextFrame) and direction == FrameDirection.DOWNSTREAM:
+            self.tts_char_count += len(frame.text)
+            self.llm_out_tokens += len(frame.text) / 4.0
+        await self.push_frame(frame, direction)
+
+    def generate_breakdown(self) -> dict:
+        duration_seconds = time.time() - self.timer_start
+        duration_minutes = duration_seconds / 60.0
+
+        billed_minutes = math.ceil(duration_minutes) if duration_minutes > 0 else 1
+        inr_multiplier = 94.94
+
+        telephony_cost = billed_minutes * 0.0071 * inr_multiplier
+        stt_cost = billed_minutes * 0.0024 * inr_multiplier
+        tts_cost = self.tts_char_count * (0.02 / 1000.0) * inr_multiplier
+        llm_cost = self.llm_out_tokens * (0.015 / 1000.0) * inr_multiplier
+
+        total_inr_cost = telephony_cost + stt_cost + tts_cost + llm_cost
+
+        return {
+            "duration": duration_seconds,
+            "stt_cost": stt_cost,
+            "tts_cost": tts_cost,
+            "llm_cost": llm_cost,
+            "telephony_cost": telephony_cost,
+            "total_cost": total_inr_cost,
+            "credits_billed": billed_minutes
+        }
+
+
 # ─── Main bot entry point ─────────────────────────────────────────────────────
 async def bot(runner_args: RunnerArguments):
-    """Main bot entry point configured for pure WebRTC on Windows."""
+    import asyncpg
+    from tools.pool import init_tool_db
+    from tools.pipecat_tools import register_all_tools, get_tools_schema
+    from tools.tenant_config import get_clinic_config
+
+    db_url = os.getenv("DATABASE_URL")
+    pool = None
+    if db_url:
+        logger.info("Initializing database pool for tools...")
+        try:
+            # 🔧 FIX: Disabled statement cache to prevent PgBouncer crashes
+            pool = await asyncpg.create_pool(dsn=db_url, statement_cache_size=0)
+            init_tool_db(pool)
+        except Exception as e:
+            logger.error(f"Failed to initialize database pool: {e}")
+
+    clinic_config = await get_clinic_config(CLINIC_ID) if CLINIC_ID else {}
+    db_system_prompt = clinic_config.get("system_prompt", "")
+
+    # 🛡️ STRICTER VAD: Prevents background voices from interrupting the bot
+    custom_vad = SileroVADAnalyzer(
+        params=VADParams(
+            stop_secs=1.2,     
+            start_secs=0.8,    
+            confidence=0.90    
+        )
+    )
 
     transport = await create_transport(
         runner_args,
@@ -243,17 +298,21 @@ async def bot(runner_args: RunnerArguments):
                 audio_in_enabled=True,
                 audio_out_enabled=True,
             ),
+            "websocket": lambda: FastAPIWebsocketParams(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                audio_in_sample_rate=8000,
+                audio_out_sample_rate=8000,
+                serializer=VobizFrameSerializer(),
+                add_wav_header=False,
+            ),
         },
     )
 
-    # Initialize AI services
     stt = SarvamSTTService(
         api_key=os.getenv("SARVAM_API_KEY"),
         settings=SarvamSTTService.Settings(
             model="saaras:v3",
-            # high_vad_sensitivity: Sarvam's built-in VAD fires faster at end-of-speech
-            # vad_signals: emits VAD events so the pipeline can react immediately
-            # Together these cut response latency from ~15s down to ~1-3s
             high_vad_sensitivity=True,
             vad_signals=True,
         ),
@@ -263,97 +322,72 @@ async def bot(runner_args: RunnerArguments):
         api_key=os.getenv("SMALLEST_API_KEY"),
         output_format="pcm",
         settings=SmallestTTSService.Settings(
-            model=SmallestTTSModel.LIGHTNING_V3_1_PRO,
-            voice="meher",
+            model=SmallestTTSModel.LIGHTNING_V3_1,
+            voice="anitha",
         ),
     )
 
     llm = GoogleLLMService(
         api_key=os.getenv("GEMINI_API_KEY"),
         settings=GoogleLLMService.Settings(
-            # gemini-2.5-flash: Has a working free tier on this key (unlike 2.0-flash)
             model="gemini-2.5-flash",
         )
     )
+    register_all_tools(llm, CLINIC_ID)
 
-    # ─── Conversation tracker + audio recorder ───────────────────────────
     tracker = ConversationTracker()
 
-    # Each call gets a unique WAV file named by session ID
-    session_id = str(uuid.uuid4().hex[:12])
-    recording_filename = f"call_{session_id}.wav"
-    recording_filepath = str(RECORDINGS_DIR / recording_filename)
-    recording_url = f"http://localhost:{NODE_PORT}/recordings/{recording_filename}"
-
-    # Two taps: one before STT (captures raw mic audio = user voice),
-    # one after TTS (captures bot synthesized audio).
-    # Both write into the SAME shared buffer so the final WAV has the full
-    # conversation mixed together (interleaved as they happen).
-    # The fixed AudioTap uses push_frame() only (no super() call) which
-    # avoids the StartFrame double-push that previously broke STT init.
-    audio_buf  = SharedAudioBuffer(filepath=recording_filepath)
-    user_tap   = AudioTap(audio_buf, label="user-mic")
-    bot_tap    = AudioTap(audio_buf, label="bot-tts")
-
-
-    # ─── Build the outbound call system prompt using real contact data ──────
-    # Format amount nicely
     try:
-        amount_display = f"${float(CONTACT_AMOUNT):,.2f}" if CONTACT_AMOUNT else "an outstanding amount"
+        amount_display = f"₹{float(CONTACT_AMOUNT):,.2f}" if CONTACT_AMOUNT else "an outstanding amount"
     except ValueError:
-        amount_display = f"${CONTACT_AMOUNT}"
+        amount_display = f"₹{CONTACT_AMOUNT}"
 
     has_contact = bool(CONTACT_NAME and CONTACT_AMOUNT)
 
+    system_prompt = db_system_prompt
+    if not system_prompt:
+        logger.warning("⚠️ No system_prompt found in DB. AI may not know how to behave.")
+        system_prompt = "You are an AI assistant."
+
     if has_contact:
         system_prompt = (
-            f"You are Meher, a professional and empathetic billing agent calling on behalf of Auvia Wellness. "
-            f"You are making an OUTBOUND call to {CONTACT_NAME} regarding their {CONTACT_REASON} of {amount_display}. "
-            f"Your ONLY goal is to: "
-            f"1) Confirm you are speaking with {CONTACT_NAME}, "
-            f"2) Inform them politely about the {CONTACT_REASON} of {amount_display}, "
-            f"3) Offer to send a secure SMS/WhatsApp payment link, and "
-            f"4) Confirm they received it and thank them. "
-            f"Do NOT ask them what they need help with — you already know why you're calling. "
-            f"Keep every response to 1-2 short sentences. Be warm, clear, and professional. "
-            f"If they ask to call back later, schedule a callback politely and end the call. "
-            f"If they have already paid, thank them and close the call."
+            system_prompt
+            .replace("{patient_name}", CONTACT_NAME)
+            .replace("{amount}", amount_display)
+            .replace("{payment_reason}", CONTACT_REASON)
+            .replace("{clinic_name}", CLINIC_NAME)
         )
         greeting_instruction = (
-            f"The call just connected. Open with: "
-            f"'Hello, this is Auvia Wellness. Am I speaking with {CONTACT_NAME}?' "
-            f"Then wait for their confirmation before proceeding."
+            f"The call just connected. Start your workflow by confirming you are speaking with {CONTACT_NAME}."
         )
     else:
-        # Fallback: no contact data — generic inbound mode
-        system_prompt = (
-            "You are Meher, a friendly billing assistant for Auvia Wellness. "
-            "Help the caller with any billing questions, capture their name and outstanding amount, "
-            "and offer a payment link if appropriate. Keep responses under 2 sentences."
-        )
         greeting_instruction = (
-            "The call just connected. Greet the caller warmly, introduce yourself as Meher from "
-            "Auvia Wellness billing, and ask how you can help them today."
+            f"The call just connected. Greet the caller warmly."
         )
 
     messages = [
         {"role": "system", "content": system_prompt},
     ]
-    context = LLMContext(messages)
+    context = LLMContext(messages, tools=get_tools_schema())
     context_aggregator = LLMContextAggregatorPair(context)
+    
+    billing_tracker = BillingTracker(context, CALL_ID)
+    bug_fixer = PipecatBugFixProcessor()
+    stt_cleaner = STTTextCleanerProcessor()
+    silence_filter = ContextSilenceFilter()
 
-    # Pipeline with both user + bot recording taps:
-    # user_tap is safe now because AudioTap only calls push_frame() (no super()),
-    # which avoids the StartFrame double-push that silenced the bot.
+    # Pipeline structure with defensive layers woven in
     pipeline = Pipeline(
         [
             transport.input(),
-            user_tap,  # ← records raw mic audio (user voice)
             stt,
+            stt_cleaner,          # 🛡️ 1. Drops garbage STT text immediately
             context_aggregator.user(),
             llm,
+            silence_filter,       # 🛡️ 2. Swallows stale LLM outputs post-interruption
+            billing_tracker,      # 💰 Tracks character count for billing
             tts,
-            bot_tap,   # ← records bot TTS audio
+            bug_fixer,            # 🛡️ 3. Ensures audio frames don't drop silently
             transport.output(),
             context_aggregator.assistant(),
         ]
@@ -372,24 +406,22 @@ async def bot(runner_args: RunnerArguments):
         greeted = True
         logger.info(f"Client connected — outbound call to: {CONTACT_NAME or 'unknown'}")
         tracker.call_start = time.time()
+        
         messages.append({"role": "system", "content": greeting_instruction})
         await task.queue_frames([LLMRunFrame()])
 
 
     @transport.event_handler("on_error")
     async def on_error(transport, error, fatal):
-        """Handle 429 rate-limit errors gracefully: wait and retry instead of crashing."""
         import re, asyncio
         err_str = str(error)
         is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
 
         if is_rate_limit and not fatal:
-            # Parse retry delay from error message (e.g. "retry in 21.7s")
             match = re.search(r'retry[^\d]+(\d+(?:\.\d+)?)', err_str, re.IGNORECASE)
             wait_secs = min(float(match.group(1)) if match else 5.0, 30.0)
             logger.warning(f"⚠️  Rate limit hit — retrying in {wait_secs:.0f}s")
 
-            # Speak a hold message to the caller so the call doesn't go silent
             from pipecat.frames.frames import TTSSpeakFrame
             await task.queue_frames([
                 TTSSpeakFrame(text="One moment please, I'll be right with you.")
@@ -403,22 +435,19 @@ async def bot(runner_args: RunnerArguments):
             await task.cancel()
 
 
+    has_saved = False
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info("Client disconnected — saving recording and extracting lead data")
+    async def cleanup_and_save_lead(reason: str = "Client disconnected"):
+        nonlocal has_saved
+        if has_saved:
+            return
+        has_saved = True
+        logger.info(f"Saving recording and extracting lead data ({reason})")
 
-        # 1. Finalise the WAV recording from the shared buffer
-        saved = audio_buf.save()
-        rec_url = recording_url if saved else None
-        if rec_url:
-            logger.info(f"Recording saved: {rec_url}")
+        rec_url = None
 
-        # 2. Rebuild transcript from LLM context messages (handling both dicts and objects)
         for msg in context.messages:
-            # Unpack LLMSpecificMessage wrapper if present
             inner_msg = getattr(msg, "message", msg)
-
             role = ""
             content = ""
 
@@ -433,7 +462,6 @@ async def bot(runner_args: RunnerArguments):
                 else:
                     content = str(parts)
             else:
-                # Handle standard dataclasses/objects
                 role = getattr(inner_msg, "role", "")
                 parts = getattr(inner_msg, "parts", "")
                 if parts:
@@ -460,24 +488,32 @@ async def bot(runner_args: RunnerArguments):
             if role == "assistant" and content:
                 tracker.add("agent", content)
             elif role == "user" and content:
-                tracker.add("user", content)
+                tracker.add("customer", content)
 
-        # 3. Extract structured lead data then POST to server
         if tracker.turns:
             lead_data = await extract_lead_from_transcript(tracker, llm)
-            await post_lead_to_server(lead_data, tracker, recording_url=rec_url)
+            breakdown = billing_tracker.generate_breakdown()
+            await post_lead_to_server(lead_data, tracker, recording_url=rec_url, breakdown=breakdown)
         else:
             logger.info("No conversation turns recorded — skipping lead capture")
 
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client):
+        await cleanup_and_save_lead("Client disconnected handler")
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        await cleanup_and_save_lead("Pipeline task finished")
+        if pool:
+            logger.info("Closing database pool...")
+            await pool.close()
 
 
 if __name__ == "__main__":
     from pipecat.runner.run import main
-    # Force the WebRTC target if no transport type was given explicitly
     if len(sys.argv) == 1:
         sys.argv.extend(["-t", "webrtc"])
     main()

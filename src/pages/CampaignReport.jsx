@@ -1,8 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import StatCard from '../components/ui/StatCard.jsx'
 import Button from '../components/ui/Button.jsx'
-import { api } from '../services/api.js'
+import Badge from '../components/ui/Badge.jsx'
+import { api, fetchRecordingBlobUrl } from '../services/api.js'
+
+const CALL_STATUS_VARIANT = {
+  Completed: 'success',
+  'Not Answered': 'neutral',
+  Failed: 'error',
+}
+
+const PAYMENT_STATUS_VARIANT = {
+  Paid: 'success',
+  Unpaid: 'neutral',
+  'Payment Link Sent': 'warning',
+}
 
 export default function CampaignReport() {
   const { id: campaignId } = useParams()
@@ -11,6 +24,19 @@ export default function CampaignReport() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+
+  const [playingCallId, setPlayingCallId] = useState(null)
+  const [loadingCallId, setLoadingCallId] = useState(null)
+  const audioRef = useRef(null)
+  const blobUrlRef = useRef(null)
+
+  // Cleanup audio and blob URL on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) audioRef.current.pause();
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     async function loadReport() {
@@ -40,8 +66,37 @@ export default function CampaignReport() {
     );
   }
 
-  const { campaignName, status, completedDate, stats, outcomes, sentiment } = data;
+  const { campaignName, status, completedDate, stats, outcomes, sentiment, calls } = data;
   const remainingAmount = stats.totalBilled - stats.totalCollected;
+
+  const handlePlayToggle = async (call) => {
+    if (!call.hasRecording) return;
+
+    if (playingCallId === call.id) {
+      if (audioRef.current) audioRef.current.pause();
+      setPlayingCallId(null);
+      return;
+    }
+
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    if (blobUrlRef.current) { URL.revokeObjectURL(blobUrlRef.current); blobUrlRef.current = null; }
+
+    setLoadingCallId(call.id);
+    try {
+      const blobUrl = await fetchRecordingBlobUrl(call.id);
+      blobUrlRef.current = blobUrl;
+      const audio = new Audio(blobUrl);
+      audioRef.current = audio;
+      audio.addEventListener('ended', () => setPlayingCallId(null));
+      audio.addEventListener('error', () => setPlayingCallId(null));
+      await audio.play();
+      setPlayingCallId(call.id);
+    } catch (e) {
+      console.error('Failed to load/play recording:', e);
+    } finally {
+      setLoadingCallId(null);
+    }
+  };
 
   function handleExportCSV() {
     if (!data) return;
@@ -150,7 +205,7 @@ export default function CampaignReport() {
                 Total Billed
               </span>
               <span className="font-display text-headline-lg text-on-surface">
-                ${stats.totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                ₹{stats.totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
             </div>
             <div className="flex flex-col gap-xs p-md bg-primary-container rounded-lg border border-primary-container">
@@ -158,7 +213,7 @@ export default function CampaignReport() {
                 Total Collected
               </span>
               <span className="font-display text-headline-lg text-on-primary-container">
-                ${stats.totalCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                ₹{stats.totalCollected.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
             </div>
             <div className="flex flex-col gap-xs p-md bg-surface rounded-lg border border-surface-variant">
@@ -166,7 +221,7 @@ export default function CampaignReport() {
                 Remaining Outstanding
               </span>
               <span className="font-display text-headline-lg text-on-surface">
-                ${remainingAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                ₹{remainingAmount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
             </div>
           </div>
@@ -218,6 +273,78 @@ export default function CampaignReport() {
           </div>
         </div>
       </div>
+
+      {/* Campaign Call Logs Table */}
+      <section className="bg-surface-container-lowest rounded-2xl shadow-ambient border border-outline-variant/20 p-md flex flex-col gap-base">
+        <h2 className="font-display text-headline-sm text-on-surface">Campaign Call Logs</h2>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left whitespace-nowrap">
+            <thead>
+              <tr className="bg-surface-bright text-on-surface-variant text-label-sm font-label-sm uppercase tracking-wider">
+                <th className="px-md py-sm font-medium">Customer</th>
+                <th className="px-md py-sm font-medium">Amount Due</th>
+                <th className="px-md py-sm font-medium">Call Status</th>
+                <th className="px-md py-sm font-medium">Payment Status</th>
+                <th className="px-md py-sm font-medium">Duration</th>
+                <th className="px-md py-sm font-medium">Feedback / Summary</th>
+                <th className="px-md py-sm font-medium text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody className="text-body-sm font-body-sm divide-y divide-surface-container-high">
+              {calls && calls.map((row) => (
+                <tr key={row.id} className="hover:bg-surface-bright transition-colors">
+                  <td className="px-md py-sm">
+                    <div className="font-medium text-on-surface">{row.name}</div>
+                    <div className="text-on-surface-variant text-xs">{row.phone}</div>
+                  </td>
+                  <td className="px-md py-sm text-on-surface">₹{row.amount.toFixed(2)}</td>
+                  <td className="px-md py-sm">
+                    <Badge variant={CALL_STATUS_VARIANT[row.callStatus] || 'neutral'}>{row.callStatus}</Badge>
+                  </td>
+                  <td className="px-md py-sm">
+                    <Badge variant={PAYMENT_STATUS_VARIANT[row.paymentStatus] || 'neutral'}>{row.paymentStatus}</Badge>
+                  </td>
+                  <td className="px-md py-sm text-on-surface-variant">{row.duration}</td>
+                  <td className="px-md py-sm">
+                    <div className="flex items-center gap-2 max-w-xs text-on-surface-variant">
+                      <button
+                        disabled={!row.hasRecording || loadingCallId === row.id}
+                        onClick={() => handlePlayToggle(row)}
+                        className={row.hasRecording ? 'text-primary hover:opacity-80 active:scale-90 transition-transform' : 'text-outline/50 cursor-not-allowed'}
+                        aria-label={playingCallId === row.id ? 'Pause recording' : loadingCallId === row.id ? 'Loading...' : 'Play recording'}
+                      >
+                        <span className="material-symbols-outlined text-[18px]">
+                          {loadingCallId === row.id ? 'hourglass_top' : playingCallId === row.id ? 'pause_circle' : 'play_circle'}
+                        </span>
+                      </button>
+                      <span className={`truncate ${!row.hasRecording ? 'italic text-outline' : ''}`} title={row.summary}>
+                        {row.summary}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-md py-sm text-center">
+                    <button
+                      onClick={() => navigate(`/call-log/${row.id}`)}
+                      className="text-outline hover:text-primary transition-colors"
+                      aria-label={`View details for ${row.name}`}
+                    >
+                      <span className="material-symbols-outlined text-[20px]">chevron_right</span>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+
+              {(!calls || calls.length === 0) && (
+                <tr>
+                  <td colSpan={7} className="px-md py-lg text-center text-on-surface-variant italic">
+                    No calls registered for this campaign.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="flex flex-col md:flex-row justify-end items-center gap-md pt-lg pb-xl border-t border-surface-variant">
         <span className="font-body-md text-body-md text-on-surface-variant mr-auto">
