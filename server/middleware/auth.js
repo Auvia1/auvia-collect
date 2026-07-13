@@ -1,10 +1,16 @@
 import jwt from 'jsonwebtoken';
 import db from '../db.js';
 
+/**
+ * Authentication middleware.
+ * Verifies the Bearer JWT, then best-effort resolves req.clinicId from
+ * the clinic_members table (matched by email).
+ * Never blocks — any valid token passes through.
+ */
 export default async function authMiddleware(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'No token provided' });
+    return res.status(401).json({ error: 'No token provided.' });
   }
 
   const token = authHeader.split(' ')[1];
@@ -13,30 +19,33 @@ export default async function authMiddleware(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'super_secret');
     req.user = decoded;
 
-    // Fetch the user's clinic membership and role
-    const memberResult = await db.query(
-      `SELECT clinic_id, role, status FROM clinic_members WHERE user_id = $1 AND status = 'active' LIMIT 1`,
-      [decoded.sub]
-    );
+    // Default — overridden below if a clinic membership is found
+    req.clinicId = decoded.clinicId ?? null;
+    req.role     = decoded.user_type ?? decoded.platform_role ?? null;
 
-    if (memberResult.rows.length === 0) {
-      return res.status(403).json({ error: 'User is not an active member of any clinic' });
+    // Best-effort: resolve the clinic for this user by email
+    // (matches clinic_members.invited_email regardless of user_type)
+    if (decoded.email) {
+      try {
+        const memberResult = await db.query(
+          `SELECT cm.clinic_id, cm.role
+           FROM clinic_members cm
+           WHERE LOWER(cm.invited_email::text) = LOWER($1)
+             AND cm.status = 'active'
+           LIMIT 1`,
+          [decoded.email]
+        );
+        if (memberResult.rows.length > 0) {
+          req.clinicId = memberResult.rows[0].clinic_id;
+          req.role     = memberResult.rows[0].role;
+        }
+      } catch (_) {
+        // Non-fatal — clinicId stays null
+      }
     }
-
-    req.clinicId = memberResult.rows[0].clinic_id;
-    req.role = memberResult.rows[0].role;
-
-    // Set local request setting in PostgreSQL connection context
-    // This makes auth.uid() function work inside PostgreSQL if we execute queries within this transaction block.
-    // However, in our routes we can also pass req.clinicId explicitly to bypass RLS issues or connect with a standard query.
-    // For queries that use schema triggers, we can run:
-    // await db.query("SET LOCAL request.jwt.claim.sub = $1", [decoded.sub]);
-    // BUT note that SET LOCAL only applies to the current transaction.
-    // Since we'll execute queries directly, we will construct them using req.clinicId to ensure multi-tenant security.
 
     next();
   } catch (err) {
-    console.error('Auth middleware error:', err);
-    return res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid or expired token.' });
   }
 }

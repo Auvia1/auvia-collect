@@ -47,6 +47,19 @@ export default function AdminLayout() {
             Clinic Configs
           </NavLink>
           <NavLink
+            to="/admin/users"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors ${
+                isActive
+                  ? 'bg-[#0f4c81] text-white shadow-sm'
+                  : 'text-gray-500 hover:text-[#0f4c81] hover:bg-gray-50'
+              }`
+            }
+          >
+            <span className="material-symbols-outlined text-[20px]">group</span>
+            Users
+          </NavLink>
+          <NavLink
             to="/admin/analytics"
             className={({ isActive }) =>
               `flex items-center gap-3 px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors ${

@@ -44,6 +44,18 @@ export const api = {
     return data;
   },
 
+  async register(fullName, email, password) {
+    const data = await request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ fullName, email, password }),
+    });
+    if (data.token) {
+      localStorage.setItem('auvia_token', data.token);
+      localStorage.setItem('auvia_user', JSON.stringify(data.user));
+    }
+    return data;
+  },
+
   logout() {
     localStorage.removeItem('auvia_token');
     localStorage.removeItem('auvia_user');
@@ -252,6 +264,24 @@ export const api = {
       query = `?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
     }
     return request(`/admin/analytics${query}`);
+  },
+
+  async getAdminUsers() {
+    return request('/admin/users');
+  },
+
+  async updateAdminUserStatus(id, status) {
+    return request(`/admin/users/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    });
+  },
+
+  async updateAdminUser(id, data) {
+    return request(`/admin/users/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
   },
 };
 

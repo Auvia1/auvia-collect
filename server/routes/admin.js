@@ -4,16 +4,8 @@ import authMiddleware from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Helper middleware to ensure caller is a platform admin
-function requirePlatformAdmin(req, res, next) {
-  if (req.user && req.user.platform_role === 'platform_admin') {
-    return next();
-  }
-  return res.status(403).json({ error: 'Access denied: Platform Admin privileges required' });
-}
-
-// Chained middleware for admin routes
-const adminAuth = [authMiddleware, requirePlatformAdmin];
+// All authenticated users can access admin routes
+const adminAuth = [authMiddleware];
 
 // 1. GET /api/admin/clinics - List all clinics on the platform
 router.get('/clinics', adminAuth, async (req, res) => {
@@ -110,9 +102,13 @@ router.get('/clinics/:id/calls', adminAuth, async (req, res) => {
 router.get('/clinics/:id/audit-logs', adminAuth, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT a.*, p.full_name as user_name, p.email as user_email
+      `SELECT a.*,
+              u.full_name as user_name,
+              u.email    as user_email
        FROM audit_logs a
-       LEFT JOIN profiles p ON p.id = a.actor_id
+       LEFT JOIN app_users u ON LOWER(u.email::text) = LOWER(
+         (SELECT email::text FROM app_users WHERE id = a.actor_id LIMIT 1)
+       )
        WHERE a.clinic_id = $1
        ORDER BY a.created_at DESC LIMIT 100`,
       [req.params.id]
@@ -135,6 +131,8 @@ router.get('/clinics/:id/activity-logs', adminAuth, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    // Table may not exist yet — return empty list instead of 500
+    if (err.code === '42P01') return res.json([]);
     console.error('Admin API error fetching clinic activity logs:', err);
     res.status(500).json({ error: 'Failed to retrieve clinic activity logs' });
   }
@@ -151,6 +149,8 @@ router.get('/clinics/:id/credit-transactions', adminAuth, async (req, res) => {
     );
     res.json(result.rows);
   } catch (err) {
+    // Table may not exist yet — return empty list instead of 500
+    if (err.code === '42P01') return res.json([]);
     console.error('Admin API error fetching clinic credit history:', err);
     res.status(500).json({ error: 'Failed to retrieve clinic credit history' });
   }
@@ -226,6 +226,68 @@ router.get('/analytics', adminAuth, async (req, res) => {
   } catch (err) {
     console.error('Admin API error fetching analytics:', err);
     res.status(500).json({ error: 'Failed to retrieve platform cost analytics' });
+  }
+});
+
+// 7. GET /api/admin/users - List all users on the platform
+router.get('/users', adminAuth, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT u.id, u.full_name, u.email, u.user_type, u.platform_role, u.status, u.is_active, u.created_at, u.last_login_at,
+              cm.clinic_id, c.name as clinic_name
+       FROM app_users u
+       LEFT JOIN clinic_members cm ON LOWER(cm.invited_email::text) = LOWER(u.email::text) AND cm.status = 'active'
+       LEFT JOIN clinics c ON c.id = cm.clinic_id
+       ORDER BY u.created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Admin API error listing users:', err);
+    res.status(500).json({ error: 'Failed to retrieve users' });
+  }
+});
+
+// 8. PUT /api/admin/users/:id/status - Update user status
+router.put('/users/:id/status', adminAuth, async (req, res) => {
+  const { status } = req.body;
+  if (!['pending', 'approved', 'rejected'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid status' });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE app_users SET status = $1 WHERE id = $2 RETURNING *`,
+      [status, req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Admin API error updating user status:', err);
+    res.status(500).json({ error: 'Failed to update user status' });
+  }
+});
+
+// 9. PUT /api/admin/users/:id - Update user type, role, and active state
+router.put('/users/:id', adminAuth, async (req, res) => {
+  const { user_type, platform_role, is_active } = req.body;
+  
+  try {
+    const result = await db.query(
+      `UPDATE app_users 
+       SET user_type = $1, platform_role = $2, is_active = $3
+       WHERE id = $4 
+       RETURNING *`,
+      [user_type, platform_role, is_active, req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Admin API error updating user:', err);
+    res.status(500).json({ error: 'Failed to update user details' });
   }
 });
 

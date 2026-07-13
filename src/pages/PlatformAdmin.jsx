@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
 import { api } from '../services/api.js'
+import PlatformUsersPanel from '../components/admin/PlatformUsersPanel.jsx'
 
 function formatDuration(seconds) {
   if (!seconds) return '0s';
@@ -19,6 +20,7 @@ export default function PlatformAdmin() {
   const [activityLogs, setActivityLogs] = useState([])
   const [creditTransactions, setCreditTransactions] = useState([])
   
+  const [mainTab, setMainTab] = useState('clinics') // 'clinics' | 'users'
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState('settings') // 'settings' | 'calls' | 'audit' | 'activity' | 'credits'
   const [loading, setLoading] = useState(true)
@@ -107,13 +109,35 @@ export default function PlatformAdmin() {
       <div className="border-b pb-6 border-gray-200">
         <h2 className="text-3xl font-bold mb-2 text-[#1e293b]">Platform Administration</h2>
         <p className="text-sm text-[#64748b]">Super Admin Console to configure tenant clinics, credentials, and review platform-wide logs.</p>
+        
+        <div className="flex gap-4 mt-6">
+          <button
+            onClick={() => setMainTab('clinics')}
+            className={`px-4 py-2 font-semibold text-sm rounded-lg transition-colors ${
+              mainTab === 'clinics' ? 'bg-[#0f4c81] text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Clinics
+          </button>
+          <button
+            onClick={() => setMainTab('users')}
+            className={`px-4 py-2 font-semibold text-sm rounded-lg transition-colors ${
+              mainTab === 'users' ? 'bg-[#0f4c81] text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            }`}
+          >
+            Users
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="bg-[#fef2f2] border border-[#fca5a5] text-[#991b1b] rounded-lg p-md text-center">{error}</div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-gutter items-start">
+      {mainTab === 'users' ? (
+        <PlatformUsersPanel />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-gutter items-start">
         
         {/* Left Column - Clinic List Selection */}
         <aside className="lg:col-span-4 flex flex-col bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden">
@@ -575,6 +599,7 @@ export default function PlatformAdmin() {
         </section>
 
       </div>
+      )}
     </div>
   )
 }

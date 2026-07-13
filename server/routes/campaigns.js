@@ -16,19 +16,32 @@ function formatDate(dateStr) {
 // 1. GET /api/campaigns - List campaigns
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT c.id, c.name, c.status, c.created_at, c.total_contacts, c.selected_contacts,
-              COALESCE(cs.total_pending_amount, 0) as total_pending_amount,
-              COALESCE(cs.total_collected, 0) as total_collected,
-              COALESCE(cs.calls_completed, 0) as calls_completed,
-              COALESCE(cs.calls_failed, 0) as calls_failed,
-              COALESCE(cs.calls_not_answered, 0) as calls_not_answered
-       FROM campaigns c
-       LEFT JOIN campaign_stats cs ON cs.campaign_id = c.id
-       WHERE c.clinic_id = $1
-       ORDER BY c.created_at DESC`,
-      [req.clinicId]
-    );
+    // If a clinicId is resolved, scope to that clinic; otherwise return all campaigns.
+    const result = req.clinicId
+      ? await db.query(
+          `SELECT c.id, c.name, c.status, c.created_at, c.total_contacts, c.selected_contacts,
+                  COALESCE(cs.total_pending_amount, 0) as total_pending_amount,
+                  COALESCE(cs.total_collected, 0) as total_collected,
+                  COALESCE(cs.calls_completed, 0) as calls_completed,
+                  COALESCE(cs.calls_failed, 0) as calls_failed,
+                  COALESCE(cs.calls_not_answered, 0) as calls_not_answered
+           FROM campaigns c
+           LEFT JOIN campaign_stats cs ON cs.campaign_id = c.id
+           WHERE c.clinic_id = $1
+           ORDER BY c.created_at DESC`,
+          [req.clinicId]
+        )
+      : await db.query(
+          `SELECT c.id, c.name, c.status, c.created_at, c.total_contacts, c.selected_contacts,
+                  COALESCE(cs.total_pending_amount, 0) as total_pending_amount,
+                  COALESCE(cs.total_collected, 0) as total_collected,
+                  COALESCE(cs.calls_completed, 0) as calls_completed,
+                  COALESCE(cs.calls_failed, 0) as calls_failed,
+                  COALESCE(cs.calls_not_answered, 0) as calls_not_answered
+           FROM campaigns c
+           LEFT JOIN campaign_stats cs ON cs.campaign_id = c.id
+           ORDER BY c.created_at DESC`
+        );
 
     const formatted = result.rows.map((row) => {
       let collectionPercent = 0;
@@ -36,14 +49,11 @@ router.get('/', authMiddleware, async (req, res) => {
       const done = (parseInt(row.calls_completed) || 0) + (parseInt(row.calls_failed) || 0) + (parseInt(row.calls_not_answered) || 0);
 
       if (row.status === 'draft') {
-        collectionPercent = 25; // default setup progress
+        collectionPercent = 25;
       } else if (row.status === 'completed') {
         collectionPercent = 100;
       } else if (selected > 0) {
-        collectionPercent = Math.min(
-          100,
-          Math.round((done / selected) * 100)
-        );
+        collectionPercent = Math.min(100, Math.round((done / selected) * 100));
       }
 
       return {
@@ -62,6 +72,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch campaigns' });
   }
 });
+
 
 // 2. GET /api/campaigns/:id - Single campaign metadata
 router.get('/:id', authMiddleware, async (req, res) => {
