@@ -189,11 +189,13 @@ class STTTextCleanerProcessor(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             stt_raw_text = frame.text.strip().lower()
             
-            # 🛡️ STRICTER BACKGROUND CHATTER FILTER
+            # 🛡️ BACKGROUND CHATTER FILTER: Allow short words if they are common conversational responses
+            allowed_short_words = {"yes", "no", "hi", "hey", "ok", "okay", "yep", "yeah", "sure", "fine", "bye", "hello"}
             if len(stt_raw_text) <= 8 and len(stt_raw_text.split()) < 2:
-                logger.warning(f"🛡️ Ignored likely background chatter: '{stt_raw_text}'")
-                return
-            if len(stt_raw_text) <= 2:
+                if stt_raw_text not in allowed_short_words:
+                    logger.warning(f"🛡️ Ignored likely background chatter: '{stt_raw_text}'")
+                    return
+            if len(stt_raw_text) <= 2 and stt_raw_text not in allowed_short_words:
                 return
                 
         await self.push_frame(frame, direction)
@@ -270,24 +272,28 @@ async def bot(runner_args: RunnerArguments):
 
     db_url = os.getenv("DATABASE_URL")
     pool = None
-    if db_url:
-        logger.info("Initializing database pool for tools...")
-        try:
-            # 🔧 FIX: Disabled statement cache to prevent PgBouncer crashes
-            pool = await asyncpg.create_pool(dsn=db_url, statement_cache_size=0)
-            init_tool_db(pool)
-        except Exception as e:
-            logger.error(f"Failed to initialize database pool: {e}")
+    async def init_db_in_background():
+        nonlocal pool
+        if db_url:
+            logger.info("Initializing database pool for tools in background...")
+            try:
+                # 🔧 FIX: Disabled statement cache to prevent PgBouncer crashes
+                pool = await asyncpg.create_pool(dsn=db_url, statement_cache_size=0)
+                init_tool_db(pool)
+                logger.info("✅ Database pool initialized in background.")
+            except Exception as e:
+                logger.error(f"Failed to initialize database pool: {e}")
+    db_init_task = asyncio.create_task(init_db_in_background())
 
     clinic_config = await get_clinic_config(CLINIC_ID) if CLINIC_ID else {}
     db_system_prompt = clinic_config.get("system_prompt", "")
 
-    # 🛡️ STRICTER VAD: Prevents background voices from interrupting the bot
+    # 🛡️ RESPONSIVE VAD: Detect speech quickly and minimize end-of-speech silence gap
     custom_vad = SileroVADAnalyzer(
         params=VADParams(
-            stop_secs=1.2,     
-            start_secs=0.8,    
-            confidence=0.90    
+            stop_secs=0.4,     # Wait 400ms after speech ends before responding (down from 1.2s)
+            start_secs=0.15,    # Detect speech in 150ms (down from 0.8s)
+            confidence=0.80    # Good threshold to filter out breaths/noises
         )
     )
 
@@ -297,6 +303,7 @@ async def bot(runner_args: RunnerArguments):
             "webrtc": lambda: TransportParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
+                vad=custom_vad,
             ),
             "websocket": lambda: FastAPIWebsocketParams(
                 audio_in_enabled=True,
@@ -305,6 +312,7 @@ async def bot(runner_args: RunnerArguments):
                 audio_out_sample_rate=8000,
                 serializer=VobizFrameSerializer(),
                 add_wav_header=False,
+                vad=custom_vad,
             ),
         },
     )
@@ -407,8 +415,16 @@ async def bot(runner_args: RunnerArguments):
         logger.info(f"Client connected — outbound call to: {CONTACT_NAME or 'unknown'}")
         tracker.call_start = time.time()
         
-        messages.append({"role": "system", "content": greeting_instruction})
-        await task.queue_frames([LLMRunFrame()])
+        # Bypassing initial LLM latency by pre-generating the greeting text
+        if CONTACT_NAME:
+            greeting_text = f"Hello, am I speaking with {CONTACT_NAME}?"
+        else:
+            greeting_text = "Hello, how can I help you today?"
+            
+        messages.append({"role": "assistant", "content": greeting_text})
+        
+        from pipecat.frames.frames import TTSSpeakFrame
+        await task.queue_frames([TTSSpeakFrame(text=greeting_text)])
 
 
     @transport.event_handler("on_error")
@@ -506,6 +522,10 @@ async def bot(runner_args: RunnerArguments):
     try:
         await runner.run(task)
     finally:
+        try:
+            db_init_task.cancel()
+        except Exception:
+            pass
         await cleanup_and_save_lead("Pipeline task finished")
         if pool:
             logger.info("Closing database pool...")

@@ -9,6 +9,7 @@ export default defineConfig({
         target: 'http://localhost:5001',
         changeOrigin: true,
         secure: false,
+        ws: true,
       },
       '/recordings': {
         target: 'http://localhost:5001',

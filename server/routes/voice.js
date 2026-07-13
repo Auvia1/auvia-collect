@@ -180,17 +180,17 @@ router.post('/start', authMiddleware, async (req, res) => {
     });
   }
 
-  // Immediately insert the call record as 'in_progress' to lock the contact
-  // so the simulator doesn't call them in parallel!
-  let callId = null;
-  try {
-    const callResult = await db.query(
-      `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
-       VALUES ($1, $2, $3, 1, 'queued', null, 'vobiz-pending', $4)
-       RETURNING id`,
-      [contact.id, campaignId, req.clinicId, parseFloat(contact.amount_due) || 0]
-    );
-    callId = callResult.rows[0].id;
+    // Immediately insert the call record as 'in_progress' to lock the contact
+    // so the simulator doesn't call them in parallel!
+    let callId = null;
+    try {
+      const callResult = await db.query(
+        `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
+         VALUES ($1, $2, $3, 1, 'queued', null, 'vobiz-pending', 0)
+         RETURNING id`,
+        [contact.id, campaignId, req.clinicId]
+      );
+      callId = callResult.rows[0].id;
   } catch (err) {
     console.error('Error creating queued call record:', err);
     return res.status(500).json({ error: 'Failed to initialize call session' });
@@ -633,23 +633,47 @@ router.post('/vobiz-hangup', async (req, res) => {
   let foundCampaignId = null;
   try {
     const callResult = await db.query(
-      `SELECT campaign_id, call_status FROM calls WHERE id = $1 LIMIT 1`,
+      `SELECT campaign_id, call_status, outcome FROM calls WHERE id = $1 LIMIT 1`,
       [callId]
     );
     if (callResult.rows.length > 0) {
       foundCampaignId = callResult.rows[0].campaign_id;
       const currentStatus = callResult.rows[0].call_status;
+      const currentOutcome = callResult.rows[0].outcome;
 
-      // If status is still queued or in_progress, mark it completed
-      if (['in_progress', 'queued'].includes(currentStatus)) {
+      // If the outcome is not set (null) or is 'other', the call didn't reach a definitive outcome
+      // (e.g. busy, unanswered, hung up early, no response). We convert it to callback queue.
+      if (!currentOutcome || currentOutcome === 'other') {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const callbackDate = tomorrow.toISOString().split('T')[0];
+        const callbackTime = '10:00:00';
+
         await db.query(
           `UPDATE calls 
            SET call_status = 'completed', 
+               outcome = 'call_later',
+               callback_date = $1,
+               callback_time = $2,
                ended_at = COALESCE(ended_at, now()),
                updated_at = now()
-           WHERE id = $1`,
-          [callId]
+           WHERE id = $3`,
+          [callbackDate, callbackTime, callId]
         );
+        console.log(`[VobizHangup] Call ${callId} failed or hung up early (outcome: ${currentOutcome || 'none'}). Automatically added to Callback Queue for ${callbackDate} at ${callbackTime}`);
+      } else {
+        // If it already has a definitive outcome (e.g. paid_now, link_sent, not_interested),
+        // we just mark the call as completed if it's still in queued or in_progress status.
+        if (['in_progress', 'queued'].includes(currentStatus)) {
+          await db.query(
+            `UPDATE calls 
+             SET call_status = 'completed', 
+                 ended_at = COALESCE(ended_at, now()),
+                 updated_at = now()
+             WHERE id = $1`,
+            [callId]
+          );
+        }
       }
     }
   } catch (err) {

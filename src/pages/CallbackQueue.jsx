@@ -31,7 +31,7 @@ export default function CallbackQueue() {
   // Search & Filter State
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState('all') // 'all' or 'my'
-  const [statusFilter, setStatusFilter] = useState('today_overdue') // 'all', 'today_overdue', 'today', 'overdue', 'future'
+  const [statusFilter, setStatusFilter] = useState('all') // 'all', 'today_overdue', 'today', 'overdue', 'future'
   const [sortBy, setSortBy] = useState('soonest') // 'soonest', 'amount_high', 'amount_low'
 
   const showToast = useCallback((message, type = 'info') => {
