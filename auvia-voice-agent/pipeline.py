@@ -288,12 +288,12 @@ async def bot(runner_args: RunnerArguments):
     clinic_config = await get_clinic_config(CLINIC_ID) if CLINIC_ID else {}
     db_system_prompt = clinic_config.get("system_prompt", "")
 
-    # 🛡️ RESPONSIVE VAD: Detect speech quickly and minimize end-of-speech silence gap
+    # 🛡️ RESPONSIVE VAD: Tuned for mobile networks (e.g., Jio SIM) to prevent breaking
     custom_vad = SileroVADAnalyzer(
         params=VADParams(
-            stop_secs=0.4,     # Wait 400ms after speech ends before responding (down from 1.2s)
-            start_secs=0.15,    # Detect speech in 150ms (down from 0.8s)
-            confidence=0.80    # Good threshold to filter out breaths/noises
+            stop_secs=1.0,     # Wait 1.0s after speech ends before responding (balanced for network jitter)
+            start_secs=0.4,    # Detect speech in 400ms (prevents false triggers on clicks/packets)
+            confidence=0.75    # Stable confidence threshold
         )
     )
 

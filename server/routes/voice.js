@@ -649,18 +649,39 @@ router.post('/vobiz-hangup', async (req, res) => {
         const callbackDate = tomorrow.toISOString().split('T')[0];
         const callbackTime = '10:00:00';
 
+        // Extract why it failed from the Vobiz payload, if provided
+        const body = req.body || {};
+        const query = req.query || {};
+        const statusFromVobiz = (body.CallStatus || body.status || query.status || '').toLowerCase();
+        const causeFromVobiz = (body.HangupCause || body.hangup_cause || '').toLowerCase();
+
+        let label = 'Unanswered';
+        if (currentStatus === 'in_progress') {
+          label = 'Hung up';
+        } else if (statusFromVobiz === 'busy' || causeFromVobiz === 'busy') {
+          label = 'Busy';
+        } else if (statusFromVobiz === 'no-answer' || causeFromVobiz === 'no-answer') {
+          label = 'Unanswered';
+        } else if (statusFromVobiz === 'failed' || causeFromVobiz === 'failed') {
+          label = 'Failed';
+        } else {
+          label = currentStatus === 'queued' ? 'Unanswered' : 'Hung up';
+        }
+
         await db.query(
           `UPDATE calls 
            SET call_status = 'completed', 
                outcome = 'call_later',
                callback_date = $1,
                callback_time = $2,
+               amount = 0,               -- Ensure credits billed is 0 for failed/busy/early hangup calls
+               ai_summary = $3,          -- Set summary to Busy / Hung up / Unanswered
                ended_at = COALESCE(ended_at, now()),
                updated_at = now()
-           WHERE id = $3`,
-          [callbackDate, callbackTime, callId]
+           WHERE id = $4`,
+          [callbackDate, callbackTime, label, callId]
         );
-        console.log(`[VobizHangup] Call ${callId} failed or hung up early (outcome: ${currentOutcome || 'none'}). Automatically added to Callback Queue for ${callbackDate} at ${callbackTime}`);
+        console.log(`[VobizHangup] Call ${callId} failed or hung up early (outcome: ${currentOutcome || 'none'}). Marked as 'call_later' (${label}) and added to Callback Queue for ${callbackDate}`);
       } else {
         // If it already has a definitive outcome (e.g. paid_now, link_sent, not_interested),
         // we just mark the call as completed if it's still in queued or in_progress status.
