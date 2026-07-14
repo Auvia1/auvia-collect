@@ -283,6 +283,10 @@ export const api = {
       body: JSON.stringify(data),
     });
   },
+
+  async getAdminCredits() {
+    return request('/admin/credits');
+  },
 };
 
 /**

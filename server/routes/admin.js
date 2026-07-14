@@ -291,4 +291,66 @@ router.put('/users/:id', adminAuth, async (req, res) => {
   }
 });
 
+// 10. GET /api/admin/credits — Platform-wide credit management data
+router.get('/credits', adminAuth, async (req, res) => {
+  try {
+    // 1. Clinics with credit balance + call count + total credits consumed + last recharge date
+    const clinicsResult = await db.query(
+      `SELECT
+         c.id, c.name, c.city, c.state, c.status,
+         c.credits,
+         COUNT(DISTINCT cl.id)               AS call_count,
+         COALESCE(SUM(ccb.credits_billed), 0) AS credits_consumed,
+         MAX(ct.created_at)                  AS last_recharged
+       FROM clinics c
+       LEFT JOIN calls cl ON cl.clinic_id = c.id
+       LEFT JOIN public.call_cost_breakdown ccb ON ccb.clinic_id = c.id
+       LEFT JOIN public.credit_transactions ct
+         ON ct.clinic_id = c.id AND COALESCE(ct.credits, 0) > 0
+       GROUP BY c.id, c.name, c.city, c.state, c.status, c.credits
+       ORDER BY c.name ASC`
+    );
+
+    // 2. All calls (platform-wide) with clinic + campaign + patient names
+    const callsResult = await db.query(
+      `SELECT
+         ca.id, ca.clinic_id, ca.call_status, ca.outcome,
+         ca.duration_seconds, ca.created_at,
+         COALESCE(ccb.credits_billed, ca.amount, 0) AS credits_billed,
+         cont.name  AS customer_name,
+         cont.phone AS customer_phone,
+         camp.name  AS campaign_name,
+         cl.name    AS clinic_name
+       FROM calls ca
+       JOIN contacts cont ON cont.id = ca.contact_id
+       JOIN campaigns camp ON camp.id = ca.campaign_id
+       JOIN clinics cl ON cl.id = ca.clinic_id
+       LEFT JOIN public.call_cost_breakdown ccb ON ccb.call_id = ca.id
+       ORDER BY ca.created_at DESC
+       LIMIT 500`
+    );
+
+    // 3. All credit transactions (platform-wide) with clinic names
+    const paymentsResult = await db.query(
+      `SELECT
+         ct.*,
+         cl.name AS clinic_name
+       FROM public.credit_transactions ct
+       LEFT JOIN clinics cl ON cl.id = ct.clinic_id
+       ORDER BY ct.created_at DESC
+       LIMIT 500`
+    ).catch(() => ({ rows: [] })); // graceful fallback if table doesn't exist yet
+
+    res.json({
+      clinics: clinicsResult.rows,
+      calls: callsResult.rows,
+      payments: paymentsResult.rows,
+    });
+  } catch (err) {
+    console.error('Admin API error fetching credit data:', err);
+    res.status(500).json({ error: 'Failed to retrieve credit management data' });
+  }
+});
+
 export default router;
+

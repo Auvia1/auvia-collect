@@ -19,6 +19,7 @@ import PlatformUsers from './pages/PlatformUsers.jsx'
 import CostAnalytics from './pages/CostAnalytics.jsx'
 import BuyCredits from './pages/BuyCredits.jsx'
 import BillingHistory from './pages/BillingHistory.jsx'
+import CreditManagement from './pages/CreditManagement.jsx'
 
 // Smart root redirect: send admin users to /admin, clinic users to /campaigns
 function RootRedirect() {
@@ -43,6 +44,7 @@ export default function App() {
           <Route path="/admin" element={<PlatformAdmin />} />
           <Route path="/admin/users" element={<PlatformUsers />} />
           <Route path="/admin/analytics" element={<CostAnalytics />} />
+          <Route path="/admin/credits" element={<CreditManagement />} />
         </Route>
 
         {/* ── CLINIC DASHBOARD (Resplice, Auvia Medical, etc.) ── */}

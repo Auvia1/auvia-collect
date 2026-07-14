@@ -72,7 +72,21 @@ export default function AdminLayout() {
             <span className="material-symbols-outlined text-[20px]">analytics</span>
             Cost Analytics
           </NavLink>
+          <NavLink
+            to="/admin/credits"
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors ${
+                isActive
+                  ? 'bg-[#0f4c81] text-white shadow-sm'
+                  : 'text-gray-500 hover:text-[#0f4c81] hover:bg-gray-50'
+              }`
+            }
+          >
+            <span className="material-symbols-outlined text-[20px]">credit_score</span>
+            Credit Management
+          </NavLink>
         </div>
+
 
         {/* Bottom User Area */}
         <div className="p-4 border-t border-gray-200 bg-white">
