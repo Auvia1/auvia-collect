@@ -4,6 +4,14 @@ import authMiddleware from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Helper – turn a clinic name into a URL-safe slug
+function toSlug(name) {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 // All authenticated users can access admin routes
 const adminAuth = [authMiddleware];
 
@@ -76,6 +84,80 @@ router.put('/clinics/:id', adminAuth, async (req, res) => {
   } catch (err) {
     console.error('Admin API error updating clinic:', err);
     res.status(500).json({ error: 'Failed to update clinic settings' });
+  }
+});
+
+// 3b. POST /api/admin/clinics — Create a new clinic
+router.post('/clinics', adminAuth, async (req, res) => {
+  const {
+    name, slug, address, city, state, phone, billing_email, status,
+    razorpay_key_id, razorpay_key_secret, whatsapp_sender_id, sms_sender_id,
+    preferred_channel, vobiz_auth_id, vobiz_auth_token, system_prompt,
+    max_retry_attempts, retry_cooldown_hours,
+    calling_window_start, calling_window_end, max_concurrent_calls
+  } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Clinic name is required' });
+  }
+
+  // Auto-generate slug if not supplied
+  const finalSlug = (slug && slug.trim()) ? slug.trim() : toSlug(name.trim()) + '-' + Date.now();
+
+  try {
+    const result = await db.query(
+      `INSERT INTO clinics
+         (name, slug, address, city, state, phone, billing_email, status,
+          razorpay_key_id, razorpay_key_secret, whatsapp_sender_id, sms_sender_id,
+          preferred_channel, vobiz_auth_id, vobiz_auth_token, system_prompt,
+          max_retry_attempts, retry_cooldown_hours,
+          calling_window_start, calling_window_end, max_concurrent_calls)
+       VALUES
+         ($1,$2,$3,$4,$5,$6,$7,$8,
+          $9,$10,$11,$12,
+          $13,$14,$15,$16,
+          $17,$18,
+          $19,$20,$21)
+       RETURNING *`,
+      [
+        name.trim(), finalSlug, address || null, city || null, state || null,
+        phone || null, billing_email || null, status || 'trial',
+        razorpay_key_id || null, razorpay_key_secret || null,
+        whatsapp_sender_id || null, sms_sender_id || null,
+        preferred_channel || 'whatsapp',
+        vobiz_auth_id || null, vobiz_auth_token || null,
+        system_prompt || null,
+        max_retry_attempts != null ? parseInt(max_retry_attempts) : 3,
+        retry_cooldown_hours != null ? parseInt(retry_cooldown_hours) : 6,
+        calling_window_start || '09:00',
+        calling_window_end   || '19:00',
+        max_concurrent_calls != null ? parseInt(max_concurrent_calls) : 5,
+      ]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error('Admin API error creating clinic:', err);
+    if (err.code === '23505') {
+      return res.status(409).json({ error: 'A clinic with that slug already exists. Please choose a different name or slug.' });
+    }
+    res.status(500).json({ error: 'Failed to create clinic' });
+  }
+});
+
+// 3c. DELETE /api/admin/clinics/:id — Delete a clinic
+router.delete('/clinics/:id', adminAuth, async (req, res) => {
+  try {
+    const result = await db.query(
+      `DELETE FROM clinics WHERE id = $1 RETURNING id, name`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Clinic not found' });
+    }
+    res.json({ success: true, deleted: result.rows[0] });
+  } catch (err) {
+    console.error('Admin API error deleting clinic:', err);
+    res.status(500).json({ error: 'Failed to delete clinic' });
   }
 });
 

@@ -2,6 +2,224 @@ import { useState, useEffect, useCallback } from 'react'
 import { GoogleMap, useJsApiLoader, Marker, InfoWindow } from '@react-google-maps/api'
 import { api } from '../services/api.js'
 
+// ── Create Clinic Modal ──────────────────────────────────────────────────────
+const INITIAL_FORM = {
+  name: '', address: '', city: '', state: '', phone: '', billing_email: '',
+  status: 'trial', preferred_channel: 'whatsapp',
+  razorpay_key_id: '', razorpay_key_secret: '',
+  whatsapp_sender_id: '', sms_sender_id: '',
+  vobiz_auth_id: '', vobiz_auth_token: '',
+  calling_window_start: '09:00', calling_window_end: '19:00',
+  max_concurrent_calls: 5, max_retry_attempts: 3, retry_cooldown_hours: 6,
+}
+
+function CreateClinicModal({ onClose, onCreated }) {
+  const [form, setForm]         = useState(INITIAL_FORM)
+  const [saving, setSaving]     = useState(false)
+  const [formError, setFormError] = useState('')
+  const [section, setSection]   = useState('basic') // basic | integrations | calling
+
+  function set(key, val) { setForm(f => ({ ...f, [key]: val })) }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!form.name.trim()) { setFormError('Clinic name is required'); return }
+    setSaving(true); setFormError('')
+    try {
+      const clinic = await api.createAdminClinic(form)
+      onCreated(clinic)
+      onClose()
+    } catch (err) {
+      setFormError(err.message || 'Failed to create clinic')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const inputCls = 'w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-[#1e293b] bg-white focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81] transition-all placeholder-gray-400'
+  const labelCls = 'text-[11px] font-bold text-gray-500 uppercase tracking-widest mb-1 block'
+  const tabCls   = (active) => `px-4 py-2 text-xs font-bold rounded-lg transition-colors ${ active ? 'bg-[#0f4c81] text-white shadow-sm' : 'text-gray-500 hover:bg-gray-100' }`
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(15,24,41,0.55)', backdropFilter: 'blur(4px)' }}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden animate-in" style={{ animation: 'slideUp 0.2s ease' }}>
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-[#0f4c81]/10 flex items-center justify-center">
+              <span className="material-symbols-outlined text-[20px] text-[#0f4c81]">local_hospital</span>
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-[#1e293b]">Create New Clinic</h2>
+              <p className="text-xs text-gray-400">Fill in the details below to onboard a new clinic</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <span className="material-symbols-outlined text-[22px]">close</span>
+          </button>
+        </div>
+
+        {/* Section tabs */}
+        <div className="flex items-center gap-2 px-6 pt-4 pb-2">
+          {[['basic','Basic Info'],['integrations','Integrations'],['calling','Calling Rules']].map(([key,label]) => (
+            <button key={key} type="button" onClick={() => setSection(key)} className={tabCls(section === key)}>{label}</button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-6 pb-2">
+
+          {/* ── Basic Info ── */}
+          {section === 'basic' && (
+            <div className="space-y-4 py-3">
+              <div>
+                <label className={labelCls}>Clinic Name <span className="text-red-400">*</span></label>
+                <input className={inputCls} placeholder="e.g. Apollo Hyderabad" value={form.name} onChange={e => set('name', e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>City</label>
+                  <input className={inputCls} placeholder="Hyderabad" value={form.city} onChange={e => set('city', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>State</label>
+                  <input className={inputCls} placeholder="Telangana" value={form.state} onChange={e => set('state', e.target.value)} />
+                </div>
+              </div>
+              <div>
+                <label className={labelCls}>Address</label>
+                <input className={inputCls} placeholder="123 Health St, Banjara Hills" value={form.address} onChange={e => set('address', e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Phone</label>
+                  <input className={inputCls} placeholder="+91 9000000000" value={form.phone} onChange={e => set('phone', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Billing Email</label>
+                  <input className={inputCls} type="email" placeholder="billing@clinic.com" value={form.billing_email} onChange={e => set('billing_email', e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Status</label>
+                  <select className={inputCls} value={form.status} onChange={e => set('status', e.target.value)}>
+                    <option value="trial">Trial</option>
+                    <option value="active">Active</option>
+                    <option value="suspended">Suspended</option>
+                  </select>
+                </div>
+                <div>
+                  <label className={labelCls}>Preferred Channel</label>
+                  <select className={inputCls} value={form.preferred_channel} onChange={e => set('preferred_channel', e.target.value)}>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="sms">SMS</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Integrations ── */}
+          {section === 'integrations' && (
+            <div className="space-y-4 py-3">
+              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest pb-1">Razorpay</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Key ID</label>
+                  <input className={inputCls} placeholder="rzp_live_..." value={form.razorpay_key_id} onChange={e => set('razorpay_key_id', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Key Secret</label>
+                  <input className={inputCls} type="password" placeholder="••••••••" value={form.razorpay_key_secret} onChange={e => set('razorpay_key_secret', e.target.value)} />
+                </div>
+              </div>
+              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest pb-1 pt-2">Messaging</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>WhatsApp Sender ID</label>
+                  <input className={inputCls} placeholder="CLINIC" value={form.whatsapp_sender_id} onChange={e => set('whatsapp_sender_id', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>SMS Sender ID</label>
+                  <input className={inputCls} placeholder="CLINIC" value={form.sms_sender_id} onChange={e => set('sms_sender_id', e.target.value)} />
+                </div>
+              </div>
+              <p className="text-[11px] font-bold text-gray-400 uppercase tracking-widest pb-1 pt-2">Vobiz</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Auth ID</label>
+                  <input className={inputCls} placeholder="vobiz-auth-id" value={form.vobiz_auth_id} onChange={e => set('vobiz_auth_id', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Auth Token</label>
+                  <input className={inputCls} type="password" placeholder="••••••••" value={form.vobiz_auth_token} onChange={e => set('vobiz_auth_token', e.target.value)} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Calling Rules ── */}
+          {section === 'calling' && (
+            <div className="space-y-4 py-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Window Start</label>
+                  <input className={inputCls} type="time" value={form.calling_window_start} onChange={e => set('calling_window_start', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Window End</label>
+                  <input className={inputCls} type="time" value={form.calling_window_end} onChange={e => set('calling_window_end', e.target.value)} />
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className={labelCls}>Max Concurrent</label>
+                  <input className={inputCls} type="number" min={1} max={20} value={form.max_concurrent_calls} onChange={e => set('max_concurrent_calls', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Max Retries</label>
+                  <input className={inputCls} type="number" min={1} max={10} value={form.max_retry_attempts} onChange={e => set('max_retry_attempts', e.target.value)} />
+                </div>
+                <div>
+                  <label className={labelCls}>Cooldown (hrs)</label>
+                  <input className={inputCls} type="number" min={1} max={72} value={form.retry_cooldown_hours} onChange={e => set('retry_cooldown_hours', e.target.value)} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {formError && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mt-2">
+              <span className="material-symbols-outlined text-red-500 text-[18px]">error</span>
+              <p className="text-sm text-red-600 font-medium">{formError}</p>
+            </div>
+          )}
+        </form>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50">
+          <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={saving}
+            className="flex items-center gap-2 px-5 py-2 rounded-lg bg-[#0f4c81] text-white text-sm font-bold hover:bg-[#0d3d6b] transition-colors disabled:opacity-60 shadow-sm"
+          >
+            {saving ? (
+              <><span className="material-symbols-outlined text-[16px]" style={{ animation: 'spin 0.8s linear infinite' }}>progress_activity</span>Creating...</>
+            ) : (
+              <><span className="material-symbols-outlined text-[16px]">add</span>Create Clinic</>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ── City → LatLng lookup for Indian cities ──────────────────────────────────
 const CITY_COORDS = {
@@ -166,6 +384,7 @@ export default function AdminDashboard() {
   const [selectedClinic, setSelectedClinic] = useState(null)
   const [mapRef, setMapRef]                 = useState(null)
   const [refreshing, setRefreshing]         = useState(false)
+  const [showCreate, setShowCreate]         = useState(false)
 
   const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
 
@@ -255,25 +474,42 @@ export default function AdminDashboard() {
   return (
     <div className="flex flex-col gap-6 pb-12 w-full">
 
+      {/* ── Create Clinic Modal ───────────────────────────────────────────── */}
+      {showCreate && (
+        <CreateClinicModal
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { loadDashboard() }}
+        />
+      )}
+
       {/* ── Page Header ──────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 className="text-2xl font-bold text-[#1e293b]">Dashboard</h2>
           <p className="text-sm text-gray-500 mt-0.5">Platform overview — Auvia Admin Network</p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-60 shadow-sm"
-        >
-          <span
-            className="material-symbols-outlined text-[18px]"
-            style={refreshing ? { animation: 'spin 0.8s linear infinite' } : {}}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#0f4c81] text-white text-sm font-bold hover:bg-[#0d3d6b] transition-colors shadow-sm"
           >
-            refresh
-          </span>
-          Refresh
-        </button>
+            <span className="material-symbols-outlined text-[18px]">add</span>
+            New Clinic
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-200 bg-white text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors disabled:opacity-60 shadow-sm"
+          >
+            <span
+              className="material-symbols-outlined text-[18px]"
+              style={refreshing ? { animation: 'spin 0.8s linear infinite' } : {}}
+            >
+              refresh
+            </span>
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* ── Stat Cards ───────────────────────────────────────────────────── */}
@@ -381,12 +617,14 @@ export default function AdminDashboard() {
                       title={clinic.name}
                       onClick={() => handleClinicClick(clinic)}
                       icon={{
-                        path: window.google.maps.SymbolPath.CIRCLE,
-                        scale: 11,
+                        // SVG teardrop / location-pin path — no dependency on window.google at render time
+                        path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z',
                         fillColor: STATUS_COLOR[clinic.status] || '#94a3b8',
                         fillOpacity: 1,
                         strokeColor: '#ffffff',
-                        strokeWeight: 2.5,
+                        strokeWeight: 1.5,
+                        scale: 1.6,
+                        anchor: { x: 12, y: 22 },
                       }}
                     />
                   )

@@ -299,6 +299,19 @@ export const api = {
   async getAdminDashboard() {
     return request('/admin/dashboard');
   },
+
+  async createAdminClinic(data) {
+    return request('/admin/clinics', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  async deleteAdminClinic(id) {
+    return request(`/admin/clinics/${id}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 
