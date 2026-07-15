@@ -385,6 +385,7 @@ export default function AdminDashboard() {
   const [mapRef, setMapRef]                 = useState(null)
   const [refreshing, setRefreshing]         = useState(false)
   const [showCreate, setShowCreate]         = useState(false)
+  const [showAllMarkers, setShowAllMarkers] = useState(true)
 
   const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
 
@@ -421,15 +422,52 @@ export default function AdminDashboard() {
     loadDashboard()
   }
 
-  const handleMapLoad = useCallback(map => setMapRef(map), [])
+  const handleMapLoad = useCallback(map => {
+    setMapRef(map)
+    // If clinic data already loaded when map mounts, fit bounds immediately
+    if (data?.clinics?.length) {
+      const bounds = new window.google.maps.LatLngBounds()
+      data.clinics.forEach(c => {
+        if (c.coords) bounds.extend(new window.google.maps.LatLng(c.coords.lat, c.coords.lng))
+      })
+      if (!bounds.isEmpty()) map.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 })
+    }
+  }, [data])
 
   function handleClinicClick(clinic) {
+    setShowAllMarkers(false)
     setSelectedClinic(clinic)
     if (mapRef && clinic.coords) {
       mapRef.panTo(clinic.coords)
       mapRef.setZoom(11)
     }
   }
+
+  function handleShowAll() {
+    setSelectedClinic(null)
+    setShowAllMarkers(true)
+    if (!mapRef || !data?.clinics?.length) return
+    const bounds = new window.google.maps.LatLngBounds()
+    data.clinics.forEach(c => {
+      if (c.coords) bounds.extend(new window.google.maps.LatLng(c.coords.lat, c.coords.lng))
+    })
+    if (!bounds.isEmpty()) {
+      mapRef.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 })
+    }
+  }
+
+  // Handle case: map already mounted, data arrives later
+  useEffect(() => {
+    if (!mapRef || !data?.clinics?.length || !window.google) return
+    const bounds = new window.google.maps.LatLngBounds()
+    data.clinics.forEach(c => {
+      if (c.coords) bounds.extend(new window.google.maps.LatLng(c.coords.lat, c.coords.lng))
+    })
+    if (!bounds.isEmpty()) {
+      mapRef.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
 
   const filteredClinics = (data?.clinics || []).filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -551,9 +589,27 @@ export default function AdminDashboard() {
               <h3 className="font-bold text-[#1e293b]">Clinic Locations</h3>
               <p className="text-xs text-gray-400 mt-0.5">All registered clinics on the map</p>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 bg-green-400 rounded-full" style={{ animation: 'pulse 2s infinite' }}></span>
-              <span className="text-xs font-bold text-green-600 uppercase tracking-wide">LIVE</span>
+            <div className="flex items-center gap-3">
+              {/* All button — fits map to every clinic marker */}
+              {MAPS_KEY && isLoaded && (
+                <button
+                  onClick={handleShowAll}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all"
+                  style={{
+                    background: showAllMarkers ? '#0f4c81' : '#e8f0fa',
+                    color: showAllMarkers ? '#ffffff' : '#0f4c81',
+                    borderColor: '#0f4c81',
+                  }}
+                  title="Show all clinic locations on map"
+                >
+                  <span className="material-symbols-outlined text-[14px]">location_on</span>
+                  All
+                </button>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 bg-green-400 rounded-full" style={{ animation: 'pulse 2s infinite' }}></span>
+                <span className="text-xs font-bold text-green-600 uppercase tracking-wide">LIVE</span>
+              </div>
             </div>
           </div>
 
@@ -609,7 +665,8 @@ export default function AdminDashboard() {
                   },
                 }}
               >
-                {clinics.map(clinic =>
+                {/* Markers — only rendered when "All" button is active */}
+                {showAllMarkers && clinics.map(clinic =>
                   clinic.coords && (
                     <Marker
                       key={clinic.id}
@@ -617,14 +674,13 @@ export default function AdminDashboard() {
                       title={clinic.name}
                       onClick={() => handleClinicClick(clinic)}
                       icon={{
-                        // SVG teardrop / location-pin path — no dependency on window.google at render time
                         path: 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z',
                         fillColor: STATUS_COLOR[clinic.status] || '#94a3b8',
                         fillOpacity: 1,
                         strokeColor: '#ffffff',
-                        strokeWeight: 1.5,
-                        scale: 1.6,
-                        anchor: { x: 12, y: 22 },
+                        strokeWeight: 2,
+                        scale: 2,
+                        anchor: new window.google.maps.Point(12, 22),
                       }}
                     />
                   )
