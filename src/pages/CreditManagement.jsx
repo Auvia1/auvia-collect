@@ -70,6 +70,15 @@ export default function CreditManagement() {
   const [callSearch, setCallSearch] = useState('')
   const [paySearch, setPaySearch] = useState('')
 
+  // Grant credits modal
+  const [grantModal, setGrantModal] = useState(false)
+  const [grantClinic, setGrantClinic] = useState(null)  // { id, name }
+  const [grantCredits, setGrantCredits] = useState('')
+  const [grantNote, setGrantNote] = useState('')
+  const [grantLoading, setGrantLoading] = useState(false)
+  const [grantSuccess, setGrantSuccess] = useState('')
+  const [grantError, setGrantError] = useState('')
+
   useEffect(() => {
     async function load() {
       setLoading(true)
@@ -146,6 +155,46 @@ export default function CreditManagement() {
     ;(data.clinics || []).forEach((c) => names.add(c.name))
     return Array.from(names).sort()
   }, [data])
+
+  // ── Grant credits handler ─────────────────────────────────────────────────
+  async function handleGrant(e) {
+    e.preventDefault()
+    if (!grantClinic || !grantCredits || parseInt(grantCredits) <= 0) return
+    setGrantLoading(true)
+    setGrantError('')
+    setGrantSuccess('')
+    try {
+      const res = await api.grantAdminCredits(grantClinic.id, parseInt(grantCredits), grantNote)
+      setGrantSuccess(`✓ ${res.creditsGranted} credits added to ${res.clinic.name}. New balance: ${res.clinic.credits}`)
+      // Live-update the clinic row in state
+      setData((prev) => ({
+        ...prev,
+        clinics: prev.clinics.map((c) =>
+          c.id === grantClinic.id ? { ...c, credits: res.clinic.credits } : c
+        ),
+      }))
+      setGrantCredits('')
+      setGrantNote('')
+    } catch (err) {
+      setGrantError(err.message || 'Failed to grant credits')
+    } finally {
+      setGrantLoading(false)
+    }
+  }
+
+  function openGrant(clinic) {
+    setGrantClinic(clinic)
+    setGrantCredits('')
+    setGrantNote('')
+    setGrantSuccess('')
+    setGrantError('')
+    setGrantModal(true)
+  }
+
+  function closeGrant() {
+    setGrantModal(false)
+    setGrantClinic(null)
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -259,9 +308,18 @@ export default function CreditManagement() {
 
           {/* Per-clinic breakdown table */}
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
-            <div className="p-5 border-b border-gray-100 flex items-center gap-3">
-              <span className="material-symbols-outlined text-[20px] text-[#0f4c81]">table_chart</span>
-              <h3 className="font-bold text-[#1e293b]">Credit Balance by Clinic</h3>
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined text-[20px] text-[#0f4c81]">table_chart</span>
+                <h3 className="font-bold text-[#1e293b]">Credit Balance by Clinic</h3>
+              </div>
+              <button
+                onClick={() => openGrant({ id: '', name: '' })}
+                className="flex items-center gap-2 bg-[#0f4c81] hover:bg-[#0c3e69] text-white text-xs font-semibold px-4 py-2 rounded-lg shadow-sm transition-colors"
+              >
+                <span className="material-symbols-outlined text-[15px]">add_card</span>
+                Give Free Credits
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse text-sm">
@@ -273,6 +331,7 @@ export default function CreditManagement() {
                     <th className="p-4 font-semibold text-xs text-gray-500 uppercase tracking-wider text-right">Total Calls</th>
                     <th className="p-4 font-semibold text-xs text-gray-500 uppercase tracking-wider text-right">Credits Consumed</th>
                     <th className="p-4 font-semibold text-xs text-gray-500 uppercase tracking-wider text-right">Last Recharged</th>
+                    <th className="p-4 font-semibold text-xs text-gray-500 uppercase tracking-wider text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-[#1e293b]">
@@ -323,11 +382,21 @@ export default function CreditManagement() {
                         <td className="p-4 text-right text-gray-500 text-xs">
                           {clinic.last_recharged ? fmtShortDate(clinic.last_recharged) : '—'}
                         </td>
+                        <td className="p-4 text-right">
+                          <button
+                            onClick={() => openGrant({ id: clinic.id, name: clinic.name })}
+                            title="Give free credits to this clinic"
+                            className="inline-flex items-center gap-1.5 text-[#0f4c81] hover:bg-[#eff6ff] border border-[#0f4c81]/20 hover:border-[#0f4c81] text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-all"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">card_giftcard</span>
+                            Gift
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   {(data.clinics || []).length === 0 && (
                     <tr>
-                      <td colSpan="6" className="p-8 text-center text-gray-400 italic">
+                      <td colSpan="7" className="p-8 text-center text-gray-400 italic">
                         No clinics found.
                       </td>
                     </tr>
@@ -335,6 +404,147 @@ export default function CreditManagement() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── GRANT CREDITS MODAL ──────────────────────────────────────────────── */}
+      {grantModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) closeGrant() }}
+        >
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-[#0f4c81] to-[#1a6fbe]">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-white/20 flex items-center justify-center">
+                  <span className="material-symbols-outlined text-white text-[20px]">card_giftcard</span>
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">Give Free Credits</h3>
+                  <p className="text-blue-200 text-[11px]">Add complimentary credits to a clinic</p>
+                </div>
+              </div>
+              <button
+                onClick={closeGrant}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-white/70 hover:text-white hover:bg-white/20 transition-colors"
+              >
+                <span className="material-symbols-outlined text-[18px]">close</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <form onSubmit={handleGrant} className="p-6 flex flex-col gap-4">
+              {/* Success banner */}
+              {grantSuccess && (
+                <div className="bg-green-50 border border-green-200 text-green-700 rounded-lg p-3 text-sm font-medium flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[16px] mt-0.5 shrink-0">check_circle</span>
+                  {grantSuccess}
+                </div>
+              )}
+              {/* Error banner */}
+              {grantError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-sm font-medium flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[16px] mt-0.5 shrink-0">error</span>
+                  {grantError}
+                </div>
+              )}
+
+              {/* Clinic selector */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">Select Clinic</label>
+                <select
+                  required
+                  value={grantClinic?.id || ''}
+                  onChange={(e) => {
+                    const c = (data?.clinics || []).find((x) => x.id === e.target.value)
+                    setGrantClinic(c ? { id: c.id, name: c.name } : null)
+                    setGrantSuccess('')
+                    setGrantError('')
+                  }}
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-[#1e293b] bg-white focus:outline-none focus:border-[#0f4c81] focus:ring-2 focus:ring-[#0f4c81]/20 transition-all"
+                >
+                  <option value="">— Choose a clinic —</option>
+                  {(data?.clinics || []).map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} (Balance: {parseInt(c.credits) || 0})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Credits input */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">Credits to Grant</label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-[18px]">toll</span>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    max="100000"
+                    placeholder="e.g. 100"
+                    value={grantCredits}
+                    onChange={(e) => { setGrantCredits(e.target.value); setGrantSuccess(''); setGrantError('') }}
+                    className="w-full pl-10 pr-3 py-2.5 border border-gray-200 rounded-lg text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-2 focus:ring-[#0f4c81]/20 transition-all"
+                  />
+                </div>
+              </div>
+
+              {/* Optional note */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+                  Admin Note <span className="text-gray-400 font-normal">(optional)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Promotional credits for onboarding"
+                  value={grantNote}
+                  onChange={(e) => setGrantNote(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-2 focus:ring-[#0f4c81]/20 transition-all"
+                />
+              </div>
+
+              {/* Preview */}
+              {grantClinic?.id && grantCredits && parseInt(grantCredits) > 0 && (
+                <div className="bg-[#eff6ff] border border-blue-100 rounded-lg px-4 py-3 text-sm">
+                  <p className="text-[#0f4c81] font-medium">
+                    Adding <strong>{parseInt(grantCredits).toLocaleString()} credits</strong> to{' '}
+                    <strong>{grantClinic.name}</strong> at ₹0.00
+                  </p>
+                  <p className="text-gray-400 text-[11px] mt-0.5">This will be logged as a free grant in the payment transaction history.</p>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={closeGrant}
+                  className="flex-1 px-4 py-2.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 text-sm font-semibold transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={grantLoading || !grantClinic?.id || !grantCredits || parseInt(grantCredits) <= 0}
+                  className="flex-1 flex items-center justify-center gap-2 bg-[#0f4c81] hover:bg-[#0c3e69] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2.5 rounded-lg shadow-sm transition-all"
+                >
+                  {grantLoading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Granting…
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-[16px]">card_giftcard</span>
+                      Grant Credits
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

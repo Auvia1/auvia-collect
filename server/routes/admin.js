@@ -291,7 +291,77 @@ router.put('/users/:id', adminAuth, async (req, res) => {
   }
 });
 
-// 10. GET /api/admin/credits — Platform-wide credit management data
+// 10. POST /api/admin/credits/grant — Give free credits to a clinic
+router.post('/credits/grant', adminAuth, async (req, res) => {
+  const { clinic_id, credits, note } = req.body;
+
+  if (!clinic_id || !credits || parseInt(credits) <= 0) {
+    return res.status(400).json({ error: 'clinic_id and a positive credits value are required' });
+  }
+
+  const grantRef = 'GRANT_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8).toUpperCase();
+
+  try {
+    await db.query('BEGIN');
+
+    // 1. Log a ₹0 credit_transaction so the payment history reflects this grant
+    await db.query(
+      `INSERT INTO public.credit_transactions
+         (clinic_id, credits, amount, gst, total, status, payment_id, description)
+       VALUES ($1, $2, 0, 0, 0, 'Success', $3, $4)`,
+      [clinic_id, parseInt(credits), grantRef, note || 'Free credits granted by admin']
+    );
+
+    // 2. Add credits to the clinic balance
+    const clinicResult = await db.query(
+      `UPDATE clinics
+       SET credits = COALESCE(credits, 0) + $1
+       WHERE id = $2
+       RETURNING id, name, credits`,
+      [parseInt(credits), clinic_id]
+    );
+
+    if (clinicResult.rows.length === 0) {
+      await db.query('ROLLBACK');
+      return res.status(404).json({ error: 'Clinic not found' });
+    }
+
+    await db.query('COMMIT');
+
+    res.json({
+      success: true,
+      clinic: clinicResult.rows[0],
+      creditsGranted: parseInt(credits),
+      reference: grantRef,
+    });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Admin API error granting credits:', err);
+    // Graceful fallback: description column may not exist yet — retry without it
+    if (err.code === '42703') {
+      try {
+        await db.query('BEGIN');
+        await db.query(
+          `INSERT INTO public.credit_transactions (clinic_id, credits, amount, gst, total, status, payment_id)
+           VALUES ($1, $2, 0, 0, 0, 'Success', $3)`,
+          [clinic_id, parseInt(credits), grantRef]
+        );
+        const clinicResult = await db.query(
+          `UPDATE clinics SET credits = COALESCE(credits, 0) + $1 WHERE id = $2 RETURNING id, name, credits`,
+          [parseInt(credits), clinic_id]
+        );
+        await db.query('COMMIT');
+        return res.json({ success: true, clinic: clinicResult.rows[0], creditsGranted: parseInt(credits), reference: grantRef });
+      } catch (e2) {
+        await db.query('ROLLBACK');
+      }
+    }
+    res.status(500).json({ error: 'Failed to grant credits' });
+  }
+});
+
+// 11. GET /api/admin/credits — Platform-wide credit management data
+
 router.get('/credits', adminAuth, async (req, res) => {
   try {
     // 1. Clinics with credit balance + call count + total credits consumed + last recharge date
@@ -352,5 +422,67 @@ router.get('/credits', adminAuth, async (req, res) => {
   }
 });
 
+// 12. GET /api/admin/dashboard — Aggregate stats + clinic geodata for the dashboard map
+router.get('/dashboard', adminAuth, async (req, res) => {
+  try {
+    // Total clinics count
+    const totalClinicsResult = await db.query(`SELECT COUNT(*) as total FROM clinics`);
+    const totalClinics = parseInt(totalClinicsResult.rows[0].total);
+
+    // Active clinics count
+    const activeClinicsResult = await db.query(`SELECT COUNT(*) as total FROM clinics WHERE status = 'active'`);
+    const activeClinics = parseInt(activeClinicsResult.rows[0].total);
+
+    // Total unique phone numbers (clinic phones + contact phones)
+    const totalPhonesResult = await db.query(`
+      SELECT COUNT(*) as total FROM (
+        SELECT phone FROM clinics WHERE phone IS NOT NULL AND phone != ''
+        UNION ALL
+        SELECT phone FROM contacts WHERE phone IS NOT NULL AND phone != ''
+      ) phones
+    `);
+    const totalPhones = parseInt(totalPhonesResult.rows[0].total);
+
+    // Plan breakdown (derived from status field)
+    const planBreakdownResult = await db.query(`
+      SELECT status, COUNT(*) as count FROM clinics GROUP BY status
+    `);
+
+    // Clinic locations + recent info for map + sidebar panel
+    const clinicsMapResult = await db.query(`
+      SELECT 
+        c.id,
+        c.name,
+        c.city,
+        c.state,
+        c.status,
+        c.phone,
+        c.latitude,
+        c.longitude,
+        COALESCE(c.credits, 0) as credits,
+        c.created_at,
+        (SELECT count(*) FROM campaigns WHERE clinic_id = c.id) as campaign_count,
+        (SELECT count(*) FROM contacts WHERE clinic_id = c.id) as contact_count,
+        (SELECT count(*) FROM calls WHERE clinic_id = c.id) as call_count
+      FROM clinics c
+      ORDER BY c.created_at DESC
+    `);
+
+    res.json({
+      stats: {
+        totalClinics,
+        activeClinics,
+        totalPhones,
+        planBreakdown: planBreakdownResult.rows,
+      },
+      clinics: clinicsMapResult.rows,
+    });
+  } catch (err) {
+    console.error('Admin dashboard error:', err);
+    res.status(500).json({ error: 'Failed to retrieve dashboard data' });
+  }
+});
+
 export default router;
+
 

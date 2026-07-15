@@ -287,7 +287,20 @@ export const api = {
   async getAdminCredits() {
     return request('/admin/credits');
   },
+
+
+  async grantAdminCredits(clinicId, credits, note) {
+    return request('/admin/credits/grant', {
+      method: 'POST',
+      body: JSON.stringify({ clinic_id: clinicId, credits, note }),
+    });
+  },
+
+  async getAdminDashboard() {
+    return request('/admin/dashboard');
+  },
 };
+
 
 /**
  * Fetch a call recording via the authenticated proxy and return a Blob Object URL.

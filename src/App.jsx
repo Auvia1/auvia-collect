@@ -20,14 +20,15 @@ import CostAnalytics from './pages/CostAnalytics.jsx'
 import BuyCredits from './pages/BuyCredits.jsx'
 import BillingHistory from './pages/BillingHistory.jsx'
 import CreditManagement from './pages/CreditManagement.jsx'
+import AdminDashboard from './pages/AdminDashboard.jsx'
 
-// Smart root redirect: send admin users to /admin, clinic users to /campaigns
+// Smart root redirect: send admin users to /admin/dashboard, clinic users to /campaigns
 function RootRedirect() {
   const token = localStorage.getItem('auvia_token')
   if (!token) return <Navigate to="/login" replace />
   const user = api.getCurrentUser()
   if (user && (user.userType === 'admin' || user.platformRole === 'platform_admin')) {
-    return <Navigate to="/admin" replace />
+    return <Navigate to="/admin/dashboard" replace />
   }
   return <Navigate to="/campaigns" replace />
 }
@@ -41,6 +42,7 @@ export default function App() {
 
         {/* ── PLATFORM ADMIN PORTAL (NexoVAI only) ── */}
         <Route element={<AdminLayout />}>
+          <Route path="/admin/dashboard" element={<AdminDashboard />} />
           <Route path="/admin" element={<PlatformAdmin />} />
           <Route path="/admin/users" element={<PlatformUsers />} />
           <Route path="/admin/analytics" element={<CostAnalytics />} />

@@ -33,6 +33,20 @@ export default function AdminLayout() {
         {/* Navigation Tabs */}
         <div className="flex-1 p-4 space-y-2 overflow-y-auto">
           <NavLink
+            to="/admin/dashboard"
+            end
+            className={({ isActive }) =>
+              `flex items-center gap-3 px-4 py-2.5 rounded-lg font-semibold text-sm transition-colors ${
+                isActive
+                  ? 'bg-[#0f4c81] text-white shadow-sm'
+                  : 'text-gray-500 hover:text-[#0f4c81] hover:bg-gray-50'
+              }`
+            }
+          >
+            <span className="material-symbols-outlined text-[20px]">dashboard</span>
+            Dashboard
+          </NavLink>
+          <NavLink
             to="/admin"
             end
             className={({ isActive }) =>
