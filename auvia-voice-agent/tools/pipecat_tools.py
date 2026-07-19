@@ -6,26 +6,32 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.frames.frames import EndTaskFrame, TTSUpdateSettingsFrame
 from pipecat.processors.frame_processor import FrameDirection
 
-from pipecat.services.smallest.tts import SmallestTTSService
+
 from loguru import logger
 
 # ==========================================================
 # 🛠️ TOOL FUNCTIONS
 # ==========================================================
 
+from pipecat.services.sarvam.tts import SarvamTTSService
+
 async def switch_language(params: FunctionCallParams, language: str):
     """Switch the spoken language of the bot (English / Hindi / Telugu)."""
     lang_lower = language.lower()
-    voice_id = "anitha"
-    model_id = "lightning_v3.1"
+    if "telugu" in lang_lower:
+        lang_code = "te-IN"
+    elif "hindi" in lang_lower:
+        lang_code = "hi-IN"
+    else:
+        lang_code = "en-IN"
 
-    logger.info(f"🗣️ Switching language to {language} | Model: {model_id} | Voice: {voice_id}")
+    logger.info(f"🗣️ Switching language to {language} | Code: {lang_code} | Voice: ritu")
 
     await params.llm.push_frame(
-        TTSUpdateSettingsFrame(delta=SmallestTTSService.Settings(
-            model=model_id,
-            voice=voice_id,
-            speed=1.1 if lang_lower == "telugu" else 1.0
+        TTSUpdateSettingsFrame(delta=SarvamTTSService.Settings(
+            voice="ritu",
+            language=lang_code,
+            pace=1.0
         ))
     )
     await params.result_callback({"status": f"Language switched to {language.capitalize()}."})

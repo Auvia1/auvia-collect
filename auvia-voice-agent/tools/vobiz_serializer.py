@@ -28,6 +28,7 @@ class VobizFrameSerializer(FrameSerializer):
         self._params: VobizFrameSerializer.InputParams = params
         self._vobiz_sample_rate = self._params.vobiz_sample_rate
         self._sample_rate = 0
+        self._stream_id = None
 
         self._input_resampler = create_stream_resampler()
         self._output_resampler = create_stream_resampler()
@@ -37,7 +38,10 @@ class VobizFrameSerializer(FrameSerializer):
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
         if isinstance(frame, InterruptionFrame):
-            return json.dumps({"event": "clearAudio"})
+            payload = {"event": "clearAudio"}
+            if self._stream_id:
+                payload["streamId"] = self._stream_id
+            return json.dumps(payload)
 
         if isinstance(frame, AudioRawFrame):
             mulaw_data = await pcm_to_ulaw(
@@ -50,14 +54,17 @@ class VobizFrameSerializer(FrameSerializer):
                 return None
 
             payload = base64.b64encode(mulaw_data).decode("utf-8")
-            return json.dumps({
+            msg = {
                 "event": "playAudio",
                 "media": {
                     "contentType": "audio/x-mulaw",
                     "sampleRate": self._vobiz_sample_rate,
                     "payload": payload,
                 },
-            })
+            }
+            if self._stream_id:
+                msg["streamId"] = self._stream_id
+            return json.dumps(msg)
 
         return None
 
@@ -92,6 +99,7 @@ class VobizFrameSerializer(FrameSerializer):
 
         elif event == "start":
             logger.info(f"Vobiz stream started: {message}")
+            self._stream_id = message.get("start", {}).get("streamId")
             return None
 
         elif event == "stop":
