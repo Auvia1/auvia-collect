@@ -23,6 +23,7 @@ services:
       - AUVIA_BACKEND_URL=http://express-backend:5001
       - AUVIA_BOT_SECRET=${BOT_SECRET}
       - SARVAM_API_KEY=${SARVAM_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - express-backend
     restart: always
