@@ -155,15 +155,10 @@ router.get('/:id/contacts', authMiddleware, async (req, res) => {
   }
 });
 
-// Helper for contextual variants mapping in database enum
-const paymentContexts = ['consultation_fee', 'lab_charges', 'pharmacy_bill', 'admission_charges', 'other'];
+// Helper for contextual variants mapping in database
 function mapContext(text) {
-  const norm = text.toLowerCase().replace(/[^a-z0-9]/g, '_');
-  if (norm.includes('visit') || norm.includes('consultation')) return 'consultation_fee';
-  if (norm.includes('lab')) return 'lab_charges';
-  if (norm.includes('pharmacy') || norm.includes('medicine')) return 'pharmacy_bill';
-  if (norm.includes('admission') || norm.includes('hospital')) return 'admission_charges';
-  return 'other';
+  if (!text || !text.trim()) return 'other';
+  return text.trim().toLowerCase().replace(/\s+/g, '_');
 }
 
 // 5. POST /api/campaigns/:id/contacts - Bulk insert contacts (for CSV import)

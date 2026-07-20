@@ -24,6 +24,7 @@ export default function SettingsPage() {
     retryCooldownHours: 6,
     callingWindowStart: '09:00',
     callingWindowEnd: '19:00',
+    maxConcurrentCalls: 5,
   })
 
   useEffect(() => {
@@ -174,6 +175,15 @@ export default function SettingsPage() {
 
           {activeTab === 'Calling Rules' && (
             <>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">Max Concurrent Calls</label>
+                <input
+                  type="number"
+                  value={settings.maxConcurrentCalls}
+                  onChange={(e) => handleChange('maxConcurrentCalls', e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                />
+              </div>
               <div className="space-y-sm">
                 <label className="block font-label-md text-label-md text-on-surface">Max Retry Attempts</label>
                 <input

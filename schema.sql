@@ -222,7 +222,7 @@ create table contacts (
   name             text not null,
   phone            text not null,
   amount_due       numeric(12,2) not null check (amount_due >= 0),
-  payment_context  payment_context not null default 'other',
+  payment_context  text not null default 'other',
 
   patient_id       text,
   due_date         date,

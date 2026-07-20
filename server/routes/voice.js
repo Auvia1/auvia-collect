@@ -104,7 +104,14 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
       admission_charges: 'admission charges',
       other: 'outstanding balance',
     };
-    const paymentReason = contextLabels[contact.payment_context] || 'outstanding balance';
+    let paymentReason = contextLabels[contact.payment_context];
+    if (!paymentReason) {
+      if (contact.payment_context && contact.payment_context !== 'other') {
+        paymentReason = contact.payment_context.replace(/_/g, ' ');
+      } else {
+        paymentReason = 'outstanding balance';
+      }
+    }
 
     // Notify Python standalone agent
     const payloadForPython = {
@@ -278,6 +285,58 @@ router.post('/start', authMiddleware, async (req, res) => {
       // Loop through the contacts in the background
       (async () => {
         for (const contact of contacts) {
+          // Check if the campaign is still active before trying to make a call
+          try {
+            const campaignCheck = await db.query(
+              `SELECT status FROM campaigns WHERE id = $1 LIMIT 1`,
+              [campaignId]
+            );
+            if (campaignCheck.rows.length === 0 || campaignCheck.rows[0].status !== 'active') {
+              console.log(`[VoiceAgent] Campaign ${campaignId} status is no longer active (${campaignCheck.rows[0]?.status}). Stopping dialer loop.`);
+              break;
+            }
+          } catch (dbErr) {
+            console.error('[VoiceAgent] Failed to check campaign status:', dbErr);
+          }
+
+          // Enforce concurrency limit (max_concurrent_calls)
+          while (true) {
+            try {
+              // Re-check campaign status while waiting
+              const campaignCheck = await db.query(
+                `SELECT status FROM campaigns WHERE id = $1 LIMIT 1`,
+                [campaignId]
+              );
+              if (campaignCheck.rows.length === 0 || campaignCheck.rows[0].status !== 'active') {
+                console.log(`[VoiceAgent] Campaign ${campaignId} stopped during concurrency wait.`);
+                return;
+              }
+
+              // Count currently active calls for this clinic
+              const activeCallsResult = await db.query(
+                `SELECT COUNT(*) FROM calls WHERE clinic_id = $1 AND call_status IN ('queued', 'in_progress')`,
+                [req.clinicId]
+              );
+              const activeCount = parseInt(activeCallsResult.rows[0].count) || 0;
+
+              // Fetch concurrency setting for clinic
+              const clinicSettingsResult = await db.query(
+                `SELECT max_concurrent_calls FROM clinics WHERE id = $1 LIMIT 1`,
+                [req.clinicId]
+              );
+              const maxConcurrency = clinicSettingsResult.rows[0]?.max_concurrent_calls || 5;
+
+              if (activeCount < maxConcurrency) {
+                break; // Concurrency limit not reached, proceed to call
+              }
+
+              console.log(`[Concurrency] Clinic ${req.clinicId} reached max active calls limit (${activeCount}/${maxConcurrency}). Polling in 1s...`);
+            } catch (pollErr) {
+              console.error('[Concurrency] Failed to run concurrency poll checks:', pollErr);
+            }
+            await delay(1000);
+          }
+
           // FIRE the call, but DO NOT use 'await' here.
           // By removing 'await', the call runs in the background concurrently!
           triggerSingleCall(contact, campaignId, req.clinicId).catch(err => {

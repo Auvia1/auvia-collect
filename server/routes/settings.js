@@ -11,7 +11,7 @@ router.get('/', authMiddleware, async (req, res) => {
       `SELECT name, razorpay_key_id, razorpay_key_secret,
               whatsapp_sender_id, sms_sender_id, preferred_channel,
               max_retry_attempts, retry_cooldown_hours,
-              calling_window_start, calling_window_end, credits
+              calling_window_start, calling_window_end, credits, max_concurrent_calls
        FROM clinics
        WHERE id = $1 LIMIT 1`,
       [req.clinicId]
@@ -34,6 +34,7 @@ router.get('/', authMiddleware, async (req, res) => {
       callingWindowStart: c.calling_window_start.substring(0, 5),
       callingWindowEnd: c.calling_window_end.substring(0, 5),
       credits: c.credits || 0,
+      maxConcurrentCalls: c.max_concurrent_calls || 5,
     });
   } catch (err) {
     console.error('Error fetching settings:', err);
@@ -116,6 +117,7 @@ router.put('/', authMiddleware, async (req, res) => {
     retryCooldownHours,
     callingWindowStart,
     callingWindowEnd,
+    maxConcurrentCalls,
   } = req.body;
 
   try {
@@ -130,8 +132,9 @@ router.put('/', authMiddleware, async (req, res) => {
            max_retry_attempts = COALESCE($7, max_retry_attempts),
            retry_cooldown_hours = COALESCE($8, retry_cooldown_hours),
            calling_window_start = COALESCE($9, calling_window_start),
-           calling_window_end = COALESCE($10, calling_window_end)
-       WHERE id = $11`,
+           calling_window_end = COALESCE($10, calling_window_end),
+           max_concurrent_calls = COALESCE($11, max_concurrent_calls)
+       WHERE id = $12`,
       [
         organizationName,
         razorpayKeyId,
@@ -143,6 +146,7 @@ router.put('/', authMiddleware, async (req, res) => {
         retryCooldownHours ? parseInt(retryCooldownHours) : null,
         callingWindowStart,
         callingWindowEnd,
+        maxConcurrentCalls ? parseInt(maxConcurrentCalls) : null,
         req.clinicId
       ]
     );
