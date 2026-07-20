@@ -1,29 +1,29 @@
 version: '3.8'
-
 services:
   express-backend:
     build:
       context: ./server
     ports:
-      - "5001:5001"
+      - '5001:5001'
     environment:
       - PORT=5001
-      - DATABASE_URL=${DATABASE_URL}
-      - JWT_SECRET=${JWT_SECRET}
-      - BOT_SECRET=${BOT_SECRET}
-      - FRONTEND_URL=${FRONTEND_URL}
-      - VOICE_AGENT_URL=http://voice-agent:8765
+      - 'DATABASE_URL=${DATABASE_URL}'
+      - 'JWT_SECRET=${JWT_SECRET}'
+      - 'BOT_SECRET=${BOT_SECRET}'
+      - 'FRONTEND_URL=${FRONTEND_URL}'
+      - 'VOICE_AGENT_URL=http://voice-agent:8765'
     restart: always
 
   voice-agent:
     build:
       context: ./auvia-voice-agent
+    ports:
+      - '8765:8765' # <--- ADD THIS LINE HERE
     environment:
-      # Docker automatically resolves the service name 'express-backend' as the internal hostname!
-      - AUVIA_BACKEND_URL=http://express-backend:5001
-      - AUVIA_BOT_SECRET=${BOT_SECRET}
-      - SARVAM_API_KEY=${SARVAM_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - 'AUVIA_BACKEND_URL=http://express-backend:5001'
+      - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
+      - 'SARVAM_API_KEY=${SARVAM_API_KEY}'
+      - 'GEMINI_API_KEY=${GEMINI_API_KEY}'
     depends_on:
       - express-backend
     restart: always
