@@ -1,4 +1,5 @@
-const API_BASE = '/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5001";
+const API_BASE = `${API_BASE_URL}/api`;
 
 async function request(endpoint, options = {}) {
   const token = localStorage.getItem('auvia_token');
@@ -322,7 +323,7 @@ export const api = {
  */
 export async function fetchRecordingBlobUrl(callId) {
   const token = localStorage.getItem('auvia_token');
-  const response = await fetch(`/api/calls/${callId}/recording`, {
+  const response = await fetch(`${API_BASE}/calls/${callId}/recording`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
 
