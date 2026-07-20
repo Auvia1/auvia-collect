@@ -1179,8 +1179,8 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     context = LLMContext(messages, tools=get_tools_schema())
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # ⚡ FAST VAD FIX: 100ms trigger allows quick "Yes"
-    custom_vad = SileroVADAnalyzer(params=VADParams(stop_secs=0.8, start_secs=0.1, confidence=0.5))
+    # 🛡️ STRICT VAD: Requires 600ms of sustained, high-confidence speech to interrupt
+    custom_vad = SileroVADAnalyzer(params=VADParams(stop_secs=0.8, start_secs=0.6, confidence=0.75))
 
     transport = FastAPIWebsocketTransport(
         websocket=websocket,

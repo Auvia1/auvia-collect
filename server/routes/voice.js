@@ -114,6 +114,11 @@ const getWsUrl = (baseUrl) => {
 // ─── 1. POST /api/voice/start — Spawn bot for a campaign ─────────────────────
 // Helper function to trigger a single Vobiz call session
 async function triggerSingleCall(contact, campaignId, clinicId) {
+  // Clean phone number (strip +)
+  if (contact && contact.phone) {
+    contact.phone = contact.phone.replace('+', '');
+  }
+
   // Immediately insert the call record as 'queued'
   const callResult = await db.query(
     `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
@@ -123,10 +128,11 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
   );
   const callId = callResult.rows[0].id;
 
+  let authId = process.env.VOBIZ_AUTH_ID || 'MA_XXXXXX';
+
   try {
     // Fetch clinic details from DB, fallback to VOBIZ environment variables
     let clinicPhone = process.env.VOBIZ_FROM_NUMBER || '+14155551234';
-    let authId = process.env.VOBIZ_AUTH_ID || 'MA_XXXXXX';
     let authToken = process.env.VOBIZ_AUTH_TOKEN || 'your_vobiz_auth_token';
     let clinicSystemPrompt = null;
     let clinicName = 'Auvia Wellness';
@@ -226,7 +232,9 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
     return callId;
 
   } catch (err) {
-    console.error(`[VoiceAgent] Failed to trigger call ${callId} for ${contact.phone}:`, err.message);
+    console.error(`[CRITICAL] Fetch failed for ${contact.phone}.`);
+    console.error(`URL Attempted:`, `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`);
+    console.error(`Error details:`, err.cause || err);
     await db.query(`UPDATE calls SET call_status = 'failed', ended_at = now() WHERE id = $1`, [callId]);
     throw err;
   }
@@ -327,7 +335,8 @@ router.post('/start', authMiddleware, async (req, res) => {
           // FIRE the call, but DO NOT use 'await' here.
           // By removing 'await', the call runs in the background concurrently!
           triggerSingleCall(contact, campaignId, req.clinicId).catch(err => {
-            console.error(`Failed to trigger call for ${contact.phone}:`, err.message);
+            console.error(`[CRITICAL] Fetch failed for ${contact.phone}.`);
+            console.error(`Error details:`, err.cause || err);
           });
 
           // Wait exactly 1 second before starting the next loop iteration (1 CPS limit)
