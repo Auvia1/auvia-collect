@@ -21,6 +21,9 @@ services:
       - '8765:8765'
     expose:
       - '8765' # 🚀 ADD THIS: Explicitly tells Coolify's proxy to route the domain here
+    labels:
+      # 🚀 FIX: Explicitly forces Coolify's proxy to route WebSockets to port 8765
+      - "traefik.http.services.voice-agent.loadbalancer.server.port=8765"
     environment:
       - 'AUVIA_BACKEND_URL=http://express-backend:5001'
       - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
