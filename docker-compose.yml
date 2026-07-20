@@ -18,7 +18,9 @@ services:
     build:
       context: ./auvia-voice-agent
     ports:
-      - '8765:8765' # <--- ADD THIS LINE HERE
+      - '8765:8765'
+    expose:
+      - '8765' # 🚀 ADD THIS: Explicitly tells Coolify's proxy to route the domain here
     environment:
       - 'AUVIA_BACKEND_URL=http://express-backend:5001'
       - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
