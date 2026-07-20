@@ -32,6 +32,17 @@ export default function BuyCredits() {
       }
     }
     loadCredits()
+
+    // Dynamically append the Razorpay Checkout SDK
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.async = true
+    document.body.appendChild(script)
+    return () => {
+      if (document.body.contains(script)) {
+        document.body.removeChild(script)
+      }
+    }
   }, [])
 
   function openConfirmModal(pkg) {
@@ -50,16 +61,63 @@ export default function BuyCredits() {
     setError('')
     setSuccessMsg('')
     try {
+      // 1. Create order on the backend
       const res = await api.rechargeCredits(selectedPackage.credits, selectedPackage.price)
-      setCredits(res.newBalance)
-      setSuccessMsg(`Successfully purchased ${selectedPackage.credits} credits!`)
-      closeConfirmModal()
-      // Clear success message after 5 seconds
-      setTimeout(() => setSuccessMsg(''), 5000)
+      
+      // 2. Setup checkout options
+      const options = {
+        key: res.key,
+        amount: res.amount,
+        currency: 'INR',
+        name: 'Auvia Platform',
+        description: `Purchase of ${selectedPackage.credits} credits`,
+        order_id: res.orderId,
+        handler: async function (paymentResponse) {
+          setRecharging(true)
+          try {
+            if (res.isMock) {
+              // Confirm order directly to immediately credit balance locally
+              const confirmRes = await api.confirmMockRecharge(res.orderId)
+              setCredits(confirmRes.newBalance)
+              setSuccessMsg(`Successfully purchased ${selectedPackage.credits} credits!`)
+            } else {
+              setSuccessMsg('Payment completed! Your credit balance will update shortly once verified.')
+              setTimeout(async () => {
+                const updated = await api.getSettings().catch(() => ({}));
+                if (updated && updated.credits !== undefined) {
+                  setCredits(updated.credits)
+                }
+              }, 4000)
+            }
+            closeConfirmModal()
+            setTimeout(() => setSuccessMsg(''), 5000)
+          } catch (err) {
+            setError(err.message || 'Payment confirmation failed.')
+          } finally {
+            setRecharging(false)
+          }
+        },
+        modal: {
+          ondismiss: function () {
+            setRecharging(false)
+          }
+        },
+        theme: {
+          color: '#0f4c81'
+        }
+      }
+
+      // 3. Open Razorpay checkout modal
+      if (window.Razorpay) {
+        const rzp = new window.Razorpay(options)
+        rzp.open()
+      } else {
+        throw new Error('Razorpay Checkout SDK failed to load. Please try again.')
+      }
+
     } catch (err) {
       console.error('Recharge failed:', err)
       setError(err.message || 'Payment processing failed.')
-    } finally {
       setRecharging(false)
     }
   }

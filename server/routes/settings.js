@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'crypto';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
 
@@ -60,6 +61,7 @@ router.get('/billing-history', authMiddleware, async (req, res) => {
 });
 
 // POST /api/settings/recharge - Recharge credits
+// POST /api/settings/recharge - Recharge credits (Initiate Razorpay order)
 router.post('/recharge', authMiddleware, async (req, res) => {
   const { credits, amount } = req.body;
   if (!credits || !amount) {
@@ -68,40 +70,230 @@ router.post('/recharge', authMiddleware, async (req, res) => {
 
   const gst = amount * 0.18;
   const total = amount + gst;
-  const paymentId = 'pay_Rb' + Math.random().toString(36).substring(2, 12);
 
   try {
-    await db.query('BEGIN');
-
-    // 1. Insert transaction
+    // 1. Insert transaction as Pending first
     const txResult = await db.query(
       `INSERT INTO credit_transactions (clinic_id, credits, amount, gst, total, status, payment_id)
-       VALUES ($1, $2, $3, $4, $5, 'Success', $6)
-       RETURNING id, status, payment_id as "paymentId", created_at as "createdAt"`,
-      [req.clinicId, credits, amount, gst, total, paymentId]
+       VALUES ($1, $2, $3, $4, $5, 'Pending', null)
+       RETURNING id`,
+      [req.clinicId, credits, amount, gst, total]
     );
+    const txId = txResult.rows[0].id;
 
-    // 2. Update clinic credit balance
-    const clinicResult = await db.query(
-      `UPDATE clinics
-       SET credits = COALESCE(credits, 0) + $1
-       WHERE id = $2
-       RETURNING credits`,
-      [credits, req.clinicId]
+    // 2. Create Razorpay order
+    const keyId = process.env.RAZORPAY_KEY_ID;
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+    let orderId = `order_mock_${txId.replace(/-/g, '').substring(0, 14)}`;
+    let key = 'rzp_test_mockkey';
+    let isMock = true;
+
+    if (keyId && keySecret && keyId !== 'your_razorpay_key_id') {
+      try {
+        const authString = Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+        const rzpResponse = await fetch('https://api.razorpay.com/v1/orders', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${authString}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            amount: Math.round(total * 100), // paise
+            currency: 'INR',
+            receipt: `rcpt_${txId.substring(0, 12)}`
+          })
+        });
+
+        const rzpData = await rzpResponse.json().catch(() => ({}));
+        if (rzpResponse.ok && rzpData.id) {
+          orderId = rzpData.id;
+          key = keyId;
+          isMock = false;
+          console.log(`[Razorpay] Created order ${orderId} for transaction ${txId}`);
+        } else {
+          console.warn('[Razorpay] Order creation failed. Falling back to mock.', rzpData);
+        }
+      } catch (err) {
+        console.error('[Razorpay] Network error creating order. Falling back to mock.', err.message);
+      }
+    } else {
+      console.log(`[Razorpay] Credentials not configured. Using mock order ID: ${orderId}`);
+    }
+
+    // 3. Save order ID to transaction
+    await db.query(
+      `UPDATE credit_transactions SET payment_id = $1 WHERE id = $2`,
+      [orderId, txId]
     );
-
-    await db.query('COMMIT');
 
     res.json({
       success: true,
-      transaction: txResult.rows[0],
-      newBalance: clinicResult.rows[0].credits
+      orderId,
+      amount: Math.round(total * 100),
+      key,
+      isMock
     });
+
+  } catch (err) {
+    console.error('Error initiating recharge:', err);
+    res.status(500).json({ error: 'Failed to initiate recharge order' });
+  }
+});
+
+// POST /api/settings/recharge/confirm-mock - Instantly credit balance for mock payments in local development
+router.post('/recharge/confirm-mock', authMiddleware, async (req, res) => {
+  const { orderId } = req.body;
+  if (!orderId) {
+    return res.status(400).json({ error: 'orderId is required' });
+  }
+
+  try {
+    const txResult = await db.query(
+      `SELECT id, clinic_id, credits, status FROM credit_transactions WHERE payment_id = $1 LIMIT 1`,
+      [orderId]
+    );
+
+    if (txResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    const tx = txResult.rows[0];
+    if (tx.clinic_id !== req.clinicId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (tx.status === 'Pending') {
+      await db.query('BEGIN');
+
+      await db.query(
+        `UPDATE credit_transactions SET status = 'Success' WHERE id = $1`,
+        [tx.id]
+      );
+
+      const clinicResult = await db.query(
+        `UPDATE clinics SET credits = COALESCE(credits, 0) + $1 WHERE id = $2 RETURNING credits`,
+        [tx.credits, req.clinicId]
+      );
+
+      await db.query('COMMIT');
+      return res.json({
+        success: true,
+        message: 'Mock payment verified successfully.',
+        newBalance: clinicResult.rows[0].credits
+      });
+    }
+
+    const clinicResult = await db.query(
+      `SELECT credits FROM clinics WHERE id = $1 LIMIT 1`,
+      [req.clinicId]
+    );
+    res.json({
+      success: true,
+      message: 'Transaction already completed.',
+      newBalance: clinicResult.rows[0]?.credits || 0
+    });
+
   } catch (err) {
     await db.query('ROLLBACK');
-    console.error('Error processing recharge:', err);
-    res.status(500).json({ error: 'Failed to process recharge' });
+    console.error('Error confirming mock payment:', err);
+    res.status(500).json({ error: 'Failed to confirm mock payment' });
   }
+});
+
+// POST /api/settings/razorpay-webhook - Handle Razorpay webhook payment updates (signature-verified)
+router.post('/razorpay-webhook', async (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'your_webhook_secret';
+
+  // Verify signature
+  if (signature) {
+    if (webhookSecret && webhookSecret !== 'your_webhook_secret') {
+      try {
+        const bodyStr = req.rawBody ? req.rawBody.toString() : JSON.stringify(req.body);
+        const expectedSignature = crypto
+          .createHmac('sha256', webhookSecret)
+          .update(bodyStr)
+          .digest('hex');
+
+        if (expectedSignature !== signature) {
+          console.warn('[RazorpayWebhook] Signature mismatch. Rejecting webhook request.');
+          return res.status(400).json({ error: 'Invalid signature' });
+        }
+      } catch (err) {
+        console.error('[RazorpayWebhook] Signature verification error:', err.message);
+        return res.status(400).json({ error: 'Signature verification failed' });
+      }
+    }
+  } else {
+    console.warn('[RazorpayWebhook] Missing x-razorpay-signature header.');
+  }
+
+  const eventData = req.body;
+  const event = eventData.event;
+  console.log(`[RazorpayWebhook] Received event: ${event}`);
+
+  // Handle successful payments
+  const acceptedEvents = ['order.paid', 'payment.captured', 'payment_link.paid'];
+  if (acceptedEvents.includes(event)) {
+    let orderId = null;
+    let paymentId = null;
+
+    if (event === 'order.paid') {
+      orderId = eventData.payload?.order?.entity?.id;
+      paymentId = eventData.payload?.payment?.entity?.id;
+    } else if (event === 'payment.captured') {
+      orderId = eventData.payload?.payment?.entity?.order_id;
+      paymentId = eventData.payload?.payment?.entity?.id;
+    } else if (event === 'payment_link.paid') {
+      orderId = eventData.payload?.payment_link?.entity?.id;
+      paymentId = eventData.payload?.payment?.entity?.id;
+    }
+
+    const matchedId = orderId || paymentId;
+
+    if (matchedId) {
+      try {
+        const txResult = await db.query(
+          `SELECT id, clinic_id, credits, status FROM credit_transactions WHERE payment_id = $1 LIMIT 1`,
+          [matchedId]
+        );
+
+        if (txResult.rows.length > 0) {
+          const tx = txResult.rows[0];
+          if (tx.status === 'Pending') {
+            await db.query('BEGIN');
+
+            // Update transaction status
+            await db.query(
+              `UPDATE credit_transactions SET status = 'Success', payment_id = $1 WHERE id = $2`,
+              [paymentId || matchedId, tx.id]
+            );
+
+            // Increment clinic credits balance
+            const clinicResult = await db.query(
+              `UPDATE clinics SET credits = COALESCE(credits, 0) + $1 WHERE id = $2 RETURNING credits`,
+              [tx.credits, tx.clinic_id]
+            );
+
+            await db.query('COMMIT');
+            console.log(`[RazorpayWebhook] Success: granted ${tx.credits} credits to clinic ${tx.clinic_id}. New balance: ${clinicResult.rows[0].credits}`);
+          } else {
+            console.log(`[RazorpayWebhook] Transaction ${tx.id} already processed (status: ${tx.status}).`);
+          }
+        } else {
+          console.warn(`[RazorpayWebhook] No pending transaction found matching ID ${matchedId}`);
+        }
+      } catch (err) {
+        await db.query('ROLLBACK');
+        console.error('[RazorpayWebhook] Database update failed:', err);
+        return res.status(500).json({ error: 'Internal database error' });
+      }
+    }
+  }
+
+  // Always respond with 200 OK to acknowledge receipt
+  res.json({ received: true });
 });
 
 // PUT /api/settings - Update clinic configuration

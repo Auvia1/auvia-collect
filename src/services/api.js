@@ -209,6 +209,13 @@ export const api = {
     });
   },
 
+  async confirmMockRecharge(orderId) {
+    return request('/settings/recharge/confirm-mock', {
+      method: 'POST',
+      body: JSON.stringify({ orderId }),
+    });
+  },
+
   // Users
   async getUsers() {
     return request('/users');
