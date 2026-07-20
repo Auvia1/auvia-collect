@@ -284,7 +284,7 @@ router.post('/start', authMiddleware, async (req, res) => {
 
   // Place outbound call using Vobiz REST API
   const vobizUrl = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
-  const publicUrl = process.env.PUBLIC_URL || 'http://localhost:5001';
+  const PUBLIC_API_URL = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
 
   try {
     const vobizResp = await fetch(vobizUrl, {
@@ -297,13 +297,13 @@ router.post('/start', authMiddleware, async (req, res) => {
       body: JSON.stringify({
         from: clinicPhone.replace(/\D/g, ''),
         to: contact.phone.replace(/\D/g, ''),
-        answer_url: `${publicUrl}/api/voice/vobiz-answer?callId=${callId}`,
+        answer_url: `${PUBLIC_API_URL}/api/voice/handle-call?callId=${callId}`,
         answer_method: 'POST',
-        hangup_url: `${publicUrl}/api/voice/vobiz-hangup?callId=${callId}`,
+        hangup_url: `${PUBLIC_API_URL}/api/voice/vobiz-hangup?callId=${callId}`,
         hangup_method: 'POST',
         // Recording webhook — Vobiz will POST recording details here when ready
         record: true,
-        record_url: `${publicUrl}/api/voice/vobiz-recording?callId=${callId}`,
+        record_url: `${PUBLIC_API_URL}/api/voice/vobiz-recording?callId=${callId}`,
         record_method: 'POST',
       })
     });
@@ -603,8 +603,8 @@ router.post('/lead', async (req, res) => {
   }
 });
 
-// ─── 5. POST /api/voice/vobiz-answer — XML response for stream ──────────────────
-router.post('/vobiz-answer', async (req, res) => {
+// ─── 5. POST /api/voice/vobiz-answer & handle-call — XML response for stream ────
+const handleAnswerCall = async (req, res) => {
   const { callId } = req.query;
   console.log(`[VobizAnswer] Call answered. Returning Stream XML for call ${callId}`);
 
@@ -619,7 +619,7 @@ router.post('/vobiz-answer', async (req, res) => {
     console.error('Error updating call status to in_progress on answer:', err);
   }
 
-  const publicUrl = process.env.PUBLIC_URL || 'http://localhost:5001';
+  const publicUrl = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
   const host = publicUrl.replace(/^https?:\/\//, '');
   const wsUrl = `wss://${host}/api/voice/ws/${callId}`;
 
@@ -640,7 +640,10 @@ router.post('/vobiz-answer', async (req, res) => {
 
   res.set('Content-Type', 'text/xml');
   res.send(xml);
-});
+};
+
+router.post('/vobiz-answer', handleAnswerCall);
+router.post('/handle-call', handleAnswerCall);
 
 // ─── 6. POST /api/voice/vobiz-hangup — Cleanup on call end ───────────────────────
 router.post('/vobiz-hangup', async (req, res) => {
