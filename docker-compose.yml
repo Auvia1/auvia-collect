@@ -8,19 +8,19 @@ services:
       - "5001:5001"
     environment:
       - PORT=5001
-      - DATABASE_URL=your_supabase_postgres_connection_string
-      - JWT_SECRET=your_super_secret_jwt_key
-      - BOT_SECRET=your_secure_shared_bot_token
-      - FRONTEND_URL=https://your-app.vercel.app
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - BOT_SECRET=${BOT_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL}
     restart: always
 
   voice-agent:
     build:
       context: ./auvia-voice-agent
     environment:
-      # Docker automatically resolves the service name 'express-backend' as the hostname!
+      # Docker automatically resolves the service name 'express-backend' as the internal hostname!
       - AUVIA_BACKEND_URL=http://express-backend:5001
-      - AUVIA_BOT_SECRET=your_secure_shared_bot_token
+      - AUVIA_BOT_SECRET=${BOT_SECRET}
     depends_on:
       - express-backend
     restart: always
