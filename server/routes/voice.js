@@ -10,6 +10,7 @@ import WebSocket from 'ws';
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Helper to automatically set campaign status to completed if all calls are done
 async function checkAndCompleteCampaign(campaignId) {
@@ -111,6 +112,127 @@ const getWsUrl = (baseUrl) => {
 };
 
 // ─── 1. POST /api/voice/start — Spawn bot for a campaign ─────────────────────
+// Helper function to trigger a single Vobiz call session
+async function triggerSingleCall(contact, campaignId, clinicId) {
+  // Immediately insert the call record as 'queued'
+  const callResult = await db.query(
+    `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
+     VALUES ($1, $2, $3, 1, 'queued', null, 'vobiz-pending', 0)
+     RETURNING id`,
+    [contact.id, campaignId, clinicId]
+  );
+  const callId = callResult.rows[0].id;
+
+  try {
+    // Fetch clinic details from DB, fallback to VOBIZ environment variables
+    let clinicPhone = process.env.VOBIZ_FROM_NUMBER || '+14155551234';
+    let authId = process.env.VOBIZ_AUTH_ID || 'MA_XXXXXX';
+    let authToken = process.env.VOBIZ_AUTH_TOKEN || 'your_vobiz_auth_token';
+    let clinicSystemPrompt = null;
+    let clinicName = 'Auvia Wellness';
+
+    const clinicResult = await db.query(
+      `SELECT phone, vobiz_auth_id, vobiz_auth_token, system_prompt, name FROM clinics WHERE id = $1 LIMIT 1`,
+      [clinicId]
+    );
+    if (clinicResult.rows.length > 0) {
+      const row = clinicResult.rows[0];
+      if (row.phone) clinicPhone = row.phone;
+      if (row.vobiz_auth_id) authId = row.vobiz_auth_id;
+      if (row.vobiz_auth_token) authToken = row.vobiz_auth_token;
+      if (row.system_prompt) clinicSystemPrompt = row.system_prompt;
+      if (row.name) clinicName = row.name;
+    }
+
+    // Build context string for the payment reason
+    const contextLabels = {
+      consultation_fee: 'consultation fee',
+      lab_charges: 'lab charges',
+      pharmacy_bill: 'pharmacy bill',
+      admission_charges: 'admission charges',
+      other: 'outstanding balance',
+    };
+    const paymentReason = contextLabels[contact.payment_context] || 'outstanding balance';
+
+    // Notify Python standalone agent
+    const payloadForPython = {
+      callId,
+      campaignId,
+      clinicId,
+      clinicName,
+      contactId: contact.id || '',
+      contactName: contact.name || '',
+      contactPhone: contact.phone || '',
+      contactAmount: contact.amount_due ? String(contact.amount_due) : '',
+      paymentReason,
+      systemPrompt: clinicSystemPrompt || '',
+    };
+
+    const prepResp = await fetch(`${PYTHON_AGENT_URL}/call/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payloadForPython),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!prepResp.ok) {
+      const errBody = await prepResp.text();
+      throw new Error(`Python agent prepare failed: ${prepResp.status} ${errBody}`);
+    }
+    console.log(`[VoiceAgent] Python agent prepared session for call ${callId}`);
+
+    // Track session (no subprocess anymore)
+    runningBots.set(campaignId, {
+      process: null,
+      startedAt: new Date(),
+      campaignId,
+      clinicId,
+    });
+
+    // Place outbound call using Vobiz REST API
+    const vobizUrl = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
+    const PUBLIC_API_URL = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
+
+    const vobizResp = await fetch(vobizUrl, {
+      method: 'POST',
+      headers: {
+        'X-Auth-ID': authId,
+        'X-Auth-Token': authToken,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: clinicPhone.replace(/\D/g, ''),
+        to: contact.phone.replace(/\D/g, ''),
+        answer_url: `${PUBLIC_API_URL}/api/voice/handle-call?callId=${callId}`,
+        answer_method: 'POST',
+        hangup_url: `${PUBLIC_API_URL}/api/voice/vobiz-hangup?callId=${callId}`,
+        hangup_method: 'POST',
+        record: true,
+        record_url: `${PUBLIC_API_URL}/api/voice/vobiz-recording?callId=${callId}`,
+        record_method: 'POST',
+      })
+    });
+
+    const vobizData = await vobizResp.json().catch(() => ({}));
+    if (!vobizResp.ok) {
+      throw new Error(`Vobiz API error ${vobizResp.status}: ${JSON.stringify(vobizData)}`);
+    }
+
+    const telephonyId = vobizData.request_uuid || vobizData.api_id || 'vobiz-call';
+    await db.query(
+      `UPDATE calls SET telephony_call_id = $1, amount = $2 WHERE id = $3`,
+      [telephonyId, parseFloat(contact.amount_due) || 0, callId]
+    );
+    console.log(`[Vobiz] Successfully placed outbound call. Call ID: ${callId}, Telephony ID: ${telephonyId}`);
+    return callId;
+
+  } catch (err) {
+    console.error(`[VoiceAgent] Failed to trigger call ${callId} for ${contact.phone}:`, err.message);
+    await db.query(`UPDATE calls SET call_status = 'failed', ended_at = now() WHERE id = $1`, [callId]);
+    throw err;
+  }
+}
+
+// ─── 1. POST /api/voice/start — Spawn bot for a campaign ─────────────────────
 router.post('/start', authMiddleware, async (req, res) => {
   const { campaignId, contactId } = req.body;
 
@@ -118,9 +240,19 @@ router.post('/start', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'campaignId is required' });
   }
 
-  // Verify campaign and fetch the target contact to call
-  let contact = null;
+  // Check that the Python voice agent is running
   try {
+    const healthResp = await fetch(`${PYTHON_AGENT_URL}/health`, { signal: AbortSignal.timeout(3000) });
+    if (!healthResp.ok) throw new Error(`Python agent health check failed: ${healthResp.status}`);
+  } catch (err) {
+    console.error('[VoiceAgent] Python agent not reachable at', PYTHON_AGENT_URL, '—', err.message);
+    return res.status(503).json({
+      error: 'Voice agent server is not running. Start it with: cd auvia-voice-agent && uv run python server.py'
+    });
+  }
+
+  try {
+    // Verify campaign exists
     const campResult = await db.query(
       `SELECT id, name, status FROM campaigns WHERE id = $1 AND clinic_id = $2 LIMIT 1`,
       [campaignId, req.clinicId]
@@ -137,23 +269,33 @@ router.post('/start', authMiddleware, async (req, res) => {
          WHERE id = $1 AND campaign_id = $2 LIMIT 1`,
         [contactId, campaignId]
       );
-      if (contactResult.rows.length > 0) {
-        contact = contactResult.rows[0];
-        try {
-          await db.query(
-            `UPDATE calls 
-             SET outcome = 'other', updated_at = now() 
-             WHERE contact_id = $1 AND outcome = 'call_later' AND call_status = 'completed'`,
-            [contactId]
-          );
-          console.log(`[CallbackQueue] Removed previous call_later outcomes for contact ${contactId}`);
-        } catch (err) {
-          console.error('Error updating previous call_later outcomes:', err);
-        }
+      if (contactResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Contact not found' });
       }
+
+      const contact = contactResult.rows[0];
+      try {
+        await db.query(
+          `UPDATE calls 
+           SET outcome = 'other', updated_at = now() 
+           WHERE contact_id = $1 AND outcome = 'call_later' AND call_status = 'completed'`,
+          [contactId]
+        );
+        console.log(`[CallbackQueue] Removed previous call_later outcomes for contact ${contactId}`);
+      } catch (err) {
+        console.error('Error updating previous call_later outcomes:', err);
+      }
+
+      const callId = await triggerSingleCall(contact, campaignId, req.clinicId);
+      return res.json({
+        success: true,
+        message: 'Vobiz outbound call initiated successfully.',
+        callId
+      });
+
     } else {
-      // Pick the first selected contact that doesn't already have a completed/failed pipecat call
-      const contactResult = await db.query(
+      // Pick all selected contacts that don't already have a completed/failed call
+      const contactsResult = await db.query(
         `SELECT c.id, c.name, c.phone, c.amount_due, c.payment_context
          FROM contacts c
          WHERE c.campaign_id = $1
@@ -161,184 +303,44 @@ router.post('/start', authMiddleware, async (req, res) => {
            AND NOT EXISTS (
              SELECT 1 FROM calls cl
              WHERE cl.contact_id = c.id
-               AND cl.telephony_call_id = 'pipecat-webrtc'
+               AND cl.telephony_call_id != 'vobiz-pending'
                AND cl.call_status IN ('completed', 'failed')
            )
-         ORDER BY c.created_at ASC
-         LIMIT 1`,
+         ORDER BY c.created_at ASC`,
         [campaignId]
       );
-      if (contactResult.rows.length > 0) {
-        contact = contactResult.rows[0];
+
+      const contacts = contactsResult.rows;
+      if (contacts.length === 0) {
+        return res.status(404).json({ error: 'No uncalled contacts found for this campaign' });
       }
-    }
-  } catch (err) {
-    console.error('Error fetching contact for bot:', err);
-    return res.status(500).json({ error: 'Failed to fetch contact' });
-  }
 
-  if (!contact) {
-    return res.status(404).json({ error: 'No uncalled contacts found for this campaign' });
-  }
-
-  // Check that the Python voice agent is running
-  try {
-    const healthResp = await fetch(`${PYTHON_AGENT_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    if (!healthResp.ok) throw new Error(`Python agent health check failed: ${healthResp.status}`);
-  } catch (err) {
-    console.error('[VoiceAgent] Python agent not reachable at', PYTHON_AGENT_URL, '—', err.message);
-    return res.status(503).json({
-      error: 'Voice agent server is not running. Start it with: cd auvia-voice-agent && uv run python server.py'
-    });
-  }
-
-    // Immediately insert the call record as 'in_progress' to lock the contact
-    // so the simulator doesn't call them in parallel!
-    let callId = null;
-    try {
-      const callResult = await db.query(
-        `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
-         VALUES ($1, $2, $3, 1, 'queued', null, 'vobiz-pending', 0)
-         RETURNING id`,
-        [contact.id, campaignId, req.clinicId]
-      );
-      callId = callResult.rows[0].id;
-  } catch (err) {
-    console.error('Error creating queued call record:', err);
-    return res.status(500).json({ error: 'Failed to initialize call session' });
-  }
-
-  // Fetch clinic details from DB, fallback to VOBIZ environment variables
-  let clinicPhone = process.env.VOBIZ_FROM_NUMBER || '+14155551234';
-  let authId = process.env.VOBIZ_AUTH_ID || 'MA_XXXXXX';
-  let authToken = process.env.VOBIZ_AUTH_TOKEN || 'your_vobiz_auth_token';
-  let clinicSystemPrompt = null; // will override pipeline.py default if set
-  let clinicName = 'Auvia Wellness';
-
-  try {
-    const clinicResult = await db.query(
-      `SELECT phone, vobiz_auth_id, vobiz_auth_token, system_prompt, name FROM clinics WHERE id = $1 LIMIT 1`,
-      [req.clinicId]
-    );
-    if (clinicResult.rows.length > 0) {
-      const row = clinicResult.rows[0];
-      if (row.phone) clinicPhone = row.phone;
-      if (row.vobiz_auth_id) authId = row.vobiz_auth_id;
-      if (row.vobiz_auth_token) authToken = row.vobiz_auth_token;
-      if (row.system_prompt) clinicSystemPrompt = row.system_prompt;
-      if (row.name) clinicName = row.name;
-    }
-  } catch (err) {
-    console.error('Error fetching clinic phone and vobiz credentials:', err);
-  }
-
-  // Build context string for the payment reason
-  const contextLabels = {
-    consultation_fee: 'consultation fee',
-    lab_charges: 'lab charges',
-    pharmacy_bill: 'pharmacy bill',
-    admission_charges: 'admission charges',
-    other: 'outstanding balance',
-  };
-  const paymentReason = contextLabels[contact?.payment_context] || 'outstanding balance';
-
-  // Notify Python standalone agent — it will be ready when Vobiz WebSocket arrives
-  const payloadForPython = {
-    callId,
-    campaignId,
-    clinicId: req.clinicId,
-    clinicName,
-    contactId:   contact?.id || '',
-    contactName: contact?.name || '',
-    contactPhone: contact?.phone || '',
-    contactAmount: contact?.amount_due ? String(contact.amount_due) : '',
-    paymentReason,
-    systemPrompt: clinicSystemPrompt || '',
-  };
-
-  try {
-    const prepResp = await fetch(`${PYTHON_AGENT_URL}/call/prepare`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payloadForPython),
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!prepResp.ok) {
-      const errBody = await prepResp.text();
-      throw new Error(`Python agent prepare failed: ${prepResp.status} ${errBody}`);
-    }
-    console.log(`[VoiceAgent] Python agent prepared session for call ${callId}`);
-  } catch (err) {
-    console.error('[VoiceAgent] Failed to prepare Python agent session:', err.message);
-    await db.query(`UPDATE calls SET call_status='failed', ended_at=now() WHERE id=$1`, [callId]);
-    return res.status(503).json({ error: 'Failed to prepare voice agent session' });
-  }
-
-  // Track session (no subprocess anymore)
-  runningBots.set(campaignId, {
-    process: null,  // no subprocess
-    startedAt: new Date(),
-    campaignId,
-    clinicId: req.clinicId,
-  });
-
-  // Place outbound call using Vobiz REST API
-  const vobizUrl = `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`;
-  const PUBLIC_API_URL = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
-
-  try {
-    const vobizResp = await fetch(vobizUrl, {
-      method: 'POST',
-      headers: {
-        'X-Auth-ID': authId,
-        'X-Auth-Token': authToken,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: clinicPhone.replace(/\D/g, ''),
-        to: contact.phone.replace(/\D/g, ''),
-        answer_url: `${PUBLIC_API_URL}/api/voice/handle-call?callId=${callId}`,
-        answer_method: 'POST',
-        hangup_url: `${PUBLIC_API_URL}/api/voice/vobiz-hangup?callId=${callId}`,
-        hangup_method: 'POST',
-        // Recording webhook — Vobiz will POST recording details here when ready
-        record: true,
-        record_url: `${PUBLIC_API_URL}/api/voice/vobiz-recording?callId=${callId}`,
-        record_method: 'POST',
-      })
-    });
-
-    const vobizData = await vobizResp.json().catch(() => ({}));
-    if (!vobizResp.ok) {
-      console.error('[Vobiz] API error details:', {
-        status: vobizResp.status,
-        url: vobizUrl,
-        authId,
-        from: clinicPhone.replace(/\D/g, ''),
-        to: contact.phone.replace(/\D/g, ''),
-        publicUrl,
-        response: JSON.stringify(vobizData),
+      // Respond to the frontend immediately so the UI doesn't freeze
+      res.json({
+        success: true,
+        message: 'Campaign started! Dialing contacts...',
       });
-      throw new Error(`Vobiz API error ${vobizResp.status}: ${JSON.stringify(vobizData)}`);
+
+      // Loop through the contacts in the background
+      (async () => {
+        for (const contact of contacts) {
+          // FIRE the call, but DO NOT use 'await' here.
+          // By removing 'await', the call runs in the background concurrently!
+          triggerSingleCall(contact, campaignId, req.clinicId).catch(err => {
+            console.error(`Failed to trigger call for ${contact.phone}:`, err.message);
+          });
+
+          // Wait exactly 1 second before starting the next loop iteration (1 CPS limit)
+          await delay(1000);
+        }
+      })();
     }
-
-    const telephonyId = vobizData.request_uuid || vobizData.api_id || 'vobiz-call';
-    await db.query(
-      `UPDATE calls SET telephony_call_id = $1, amount = $2 WHERE id = $3`,
-      [telephonyId, parseFloat(contact.amount_due) || 0, callId]
-    );
-    console.log(`[Vobiz] Successfully placed outbound call. Call ID: ${callId}, Telephony ID: ${telephonyId}`);
-
   } catch (err) {
-    console.error('[Vobiz] Outbound call trigger failed:', err);
-    try { botProcess.kill('SIGKILL'); } catch (_) {}
-    return res.status(500).json({ error: 'Failed to trigger Vobiz telephony call' });
+    console.error('Error initiating call session:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Failed to start call session' });
+    }
   }
-
-  res.json({
-    success: true,
-    message: 'Vobiz outbound call initiated successfully.',
-  });
 });
 
 // ─── 2. POST /api/voice/stop — Kill bot for a campaign ───────────────────────
