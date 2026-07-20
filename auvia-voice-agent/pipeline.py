@@ -850,8 +850,9 @@ _gemini_key = os.getenv("GEMINI_API_KEY")
 if _gemini_key:
     os.environ["GOOGLE_API_KEY"] = _gemini_key
 
-LEAD_CALLBACK_URL = os.getenv("AUVIA_LEAD_CALLBACK_URL", "http://localhost:5001/api/voice/lead")
-BOT_SECRET = os.getenv("AUVIA_BOT_SECRET", "auvia_bot_secret_2025")
+BACKEND_API_BASE = os.getenv("AUVIA_BACKEND_URL", "http://localhost:5001")
+LEAD_ENDPOINT = f"{BACKEND_API_BASE}/api/voice/lead"
+BOT_SECRET = os.getenv("AUVIA_BOT_SECRET")
 
 FILLER_TEXT = {
     "te-IN": "చూస్తున్నాను",
@@ -934,9 +935,19 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
         "billing": breakdown,
         **lead_data,
     }
+    if not BOT_SECRET:
+        logger.error("AUVIA_BOT_SECRET is not set; refusing to post lead payload")
+        return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(LEAD_CALLBACK_URL, json=payload, headers={"x-bot-secret": BOT_SECRET})
+            resp = await client.post(
+                LEAD_ENDPOINT,
+                json=payload,
+                headers={
+                    "x-bot-secret": BOT_SECRET,
+                    "Content-Type": "application/json",
+                },
+            )
             if resp.status_code == 200: logger.info(f"✅ Lead saved: {resp.json()}")
             else: logger.error(f"Lead save failed ({resp.status_code}): {resp.text}")
     except Exception as e:

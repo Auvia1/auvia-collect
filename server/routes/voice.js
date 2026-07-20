@@ -361,10 +361,15 @@ router.get('/status', authMiddleware, (req, res) => {
 router.post('/lead', async (req, res) => {
   // Verify the bot secret
   const botSecret = req.headers['x-bot-secret'];
-  const expectedSecret = process.env.BOT_SECRET || 'auvia_bot_secret_2025';
+  const expectedSecret = process.env.BOT_SECRET || process.env.AUVIA_BOT_SECRET;
+
+  if (!expectedSecret) {
+    console.error('[VoiceLead] BOT_SECRET is not configured on the backend');
+    return res.status(500).json({ error: 'Server misconfigured: BOT_SECRET is required' });
+  }
 
   if (botSecret !== expectedSecret) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(401).json({ error: 'Unauthorized agent pipeline' });
   }
 
   const {

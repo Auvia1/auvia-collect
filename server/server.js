@@ -20,8 +20,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// Enable CORS with default settings (allowing request from frontend proxy or direct)
-app.use(cors());
+const allowedOrigins = [
+  process.env.FRONTEND_URL, // Your future Vercel URL (e.g., https://collect.auvia.ai)
+  'http://localhost:5173'    // Keep local development working
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
 
 // Body parser
 app.use(express.json());
@@ -32,8 +45,11 @@ app.use(express.urlencoded({ extended: true }));
 // Accessible at: http://localhost:5001/recordings/call_<session>.wav
 const RECORDINGS_DIR = path.resolve(__dirname, '../auvia-voice-agent/recordings');
 app.use('/recordings', (req, res, next) => {
-  // Allow the Vite dev-server (any origin) to fetch audio for playback
-  res.set('Access-Control-Allow-Origin', '*');
+  const origin = req.get('Origin');
+  if (origin && allowedOrigins.includes(origin)) {
+    res.set('Access-Control-Allow-Origin', origin);
+    res.set('Vary', 'Origin');
+  }
   res.set('Access-Control-Allow-Headers', 'Range');
   res.set('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
   next();

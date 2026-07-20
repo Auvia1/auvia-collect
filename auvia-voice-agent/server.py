@@ -485,7 +485,7 @@ if _gemini_key:
 # ── Constants ──────────────────────────────────────────────────────────────────
 AGENT_PORT = int(os.getenv("AGENT_PORT", "8765"))
 NODE_URL   = os.getenv("NODE_URL", "http://localhost:5001")
-BOT_SECRET = os.getenv("AUVIA_BOT_SECRET", "auvia_bot_secret_2025")
+BOT_SECRET = os.getenv("AUVIA_BOT_SECRET")
 AGENT_DIR  = Path(__file__).parent
 
 # ── Session store: call_id → session dict ──────────────────────────────────────
