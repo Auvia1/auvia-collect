@@ -804,7 +804,7 @@
 #         sys.argv.extend(["-t", "webrtc"])
 #     main()
 
-
+#pipeline.py
 import os
 import json
 import time
@@ -1180,7 +1180,11 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     context_aggregator = LLMContextAggregatorPair(context)
 
     # 🛡️ STRICT VAD: Requires 600ms of sustained, high-confidence speech to interrupt
-    custom_vad = SileroVADAnalyzer(params=VADParams(stop_secs=0.8, start_secs=0.6, confidence=0.75))
+    custom_vad = SileroVADAnalyzer(params=VADParams(
+        stop_secs=0.8, 
+        start_secs=0.6,    # Ignored unless user speaks continuously for 600ms
+        confidence=0.75    # High confidence required to ignore background static
+    ))
 
     transport = FastAPIWebsocketTransport(
         websocket=websocket,

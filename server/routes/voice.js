@@ -5,8 +5,6 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
-import { WebSocketServer } from 'ws';
-import WebSocket from 'ws';
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,59 +39,7 @@ async function checkAndCompleteCampaign(campaignId) {
 // ─── In-memory bot process store (keyed by campaignId) ───────────────────────
 const runningBots = new Map(); // campaignId → { process, startedAt, campaignId, clinicId }
 
-// ─── WebSocket Proxy for Vobiz audio streaming ──────────────────────────────
-const wss = new WebSocketServer({ noServer: true });
 
-export function handleUpgrade(request, socket, head) {
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
-}
-
-wss.on('connection', (vobizWs, request) => {
-  const parts = request.url.split('/');
-  const callId = parts[parts.length - 1];
-  console.log(`[VobizProxy] New connection for call ${callId}`);
-
-  const PYTHON_AGENT_WS = process.env.PYTHON_AGENT_WS_URL || getWsUrl(VOICE_AGENT_BASE_URL);
-  const botWs = new WebSocket(`${PYTHON_AGENT_WS}/ws/${callId}`);
-
-  botWs.on('open', () => {
-    console.log(`[VobizProxy] Connected to Pipecat bot for call ${callId}`);
-  });
-
-  vobizWs.on('message', (message, isBinary) => {
-    if (botWs.readyState === WebSocket.OPEN) {
-      botWs.send(message, { binary: isBinary });
-    }
-  });
-
-  botWs.on('message', (message, isBinary) => {
-    if (vobizWs.readyState === WebSocket.OPEN) {
-      vobizWs.send(message, { binary: isBinary });
-    }
-  });
-
-  vobizWs.on('close', () => {
-    console.log(`[VobizProxy] Vobiz closed connection for call ${callId}`);
-    botWs.close();
-  });
-
-  botWs.on('close', () => {
-    console.log(`[VobizProxy] Pipecat bot closed connection for call ${callId}`);
-    vobizWs.close();
-  });
-
-  vobizWs.on('error', (err) => {
-    console.error(`[VobizProxy] Vobiz WebSocket error:`, err);
-    botWs.close();
-  });
-
-  botWs.on('error', (err) => {
-    console.error(`[VobizProxy] Pipecat WebSocket error:`, err);
-    vobizWs.close();
-  });
-});
 
 
 // Python standalone voice agent URL
@@ -631,8 +577,6 @@ const handleAnswerCall = async (req, res) => {
   }
 
   const publicUrl = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
-  const host = publicUrl.replace(/^https?:\/\//, '');
-  const wsUrl = `wss://${host}/api/voice/ws/${callId}`;
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -645,8 +589,8 @@ const handleAnswerCall = async (req, res) => {
         playBeep="false" 
         fileFormat="mp3" 
     />
-    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">${wsUrl}</Stream>
-    <Hangup/>
+    <!-- 🚀 FIX: Vobiz now connects DIRECTLY to FastAPI, completely bypassing Node.js! -->
+    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">wss://collectagent.nexovai.in/ws/${callId}</Stream>
 </Response>`;
 
   res.set('Content-Type', 'text/xml');

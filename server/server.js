@@ -11,7 +11,7 @@ import callsRouter from './routes/calls.js';
 import settingsRouter from './routes/settings.js';
 import usersRouter from './routes/users.js';
 import adminRouter from './routes/admin.js';
-import voiceRouter, { handleUpgrade } from './routes/voice.js';
+import voiceRouter from './routes/voice.js';
 
 dotenv.config();
 
@@ -80,10 +80,4 @@ const server = app.listen(PORT, () => {
   console.log(`Healthcheck: http://localhost:${PORT}/api/health`);
 });
 
-server.on('upgrade', (request, socket, head) => {
-  if (request.url.startsWith('/api/voice/ws/')) {
-    handleUpgrade(request, socket, head);
-  } else {
-    socket.destroy();
-  }
-});
+
