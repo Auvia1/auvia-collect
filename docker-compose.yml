@@ -22,6 +22,7 @@ services:
       # Docker automatically resolves the service name 'express-backend' as the internal hostname!
       - AUVIA_BACKEND_URL=http://express-backend:5001
       - AUVIA_BOT_SECRET=${BOT_SECRET}
+      - SARVAM_API_KEY=${SARVAM_API_KEY}
     depends_on:
       - express-backend
     restart: always
