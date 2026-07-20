@@ -576,25 +576,26 @@ const handleAnswerCall = async (req, res) => {
     console.error('Error updating call status to in_progress on answer:', err);
   }
 
-  const publicUrl = process.env.PUBLIC_API_URL || process.env.PUBLIC_URL || 'https://api2.nexovai.in';
+  // Ensure this matches the exact domain you set up in Coolify!
+  const PYTHON_DOMAIN = 'collectagent.nexovai.in'; 
 
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+  const vobizXml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Record 
         recordSession="true" 
         redirect="false" 
         maxLength="7200"
-        callbackUrl="${publicUrl}/api/voice/vobiz-recording?callId=${callId}" 
-        callbackMethod="POST" 
-        playBeep="false" 
         fileFormat="mp3" 
     />
-    <!-- 🚀 FIX: Vobiz now connects DIRECTLY to FastAPI, completely bypassing Node.js! -->
-    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">wss://collectagent.nexovai.in/ws/${callId}</Stream>
+    <!-- 🚀 CRITICAL FIX: Explicitly enforce the wss:// protocol and path parameter -->
+    <Stream 
+        bidirectional="true" 
+        keepCallAlive="true" 
+        contentType="audio/x-mulaw;rate=8000"
+    >wss://${PYTHON_DOMAIN}/ws/${callId}</Stream>
 </Response>`;
 
-  res.set('Content-Type', 'text/xml');
-  res.send(xml);
+  return res.type('text/xml').send(vobizXml);
 };
 
 router.post('/vobiz-answer', handleAnswerCall);
