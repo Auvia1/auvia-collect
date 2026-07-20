@@ -12,6 +12,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - BOT_SECRET=${BOT_SECRET}
       - FRONTEND_URL=${FRONTEND_URL}
+      - VOICE_AGENT_URL=http://voice-agent:8765
     restart: always
 
   voice-agent:

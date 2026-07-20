@@ -54,7 +54,7 @@ wss.on('connection', (vobizWs, request) => {
   const callId = parts[parts.length - 1];
   console.log(`[VobizProxy] New connection for call ${callId}`);
 
-  const PYTHON_AGENT_WS = process.env.PYTHON_AGENT_WS_URL || 'ws://localhost:8765';
+  const PYTHON_AGENT_WS = process.env.PYTHON_AGENT_WS_URL || getWsUrl(VOICE_AGENT_BASE_URL);
   const botWs = new WebSocket(`${PYTHON_AGENT_WS}/ws/${callId}`);
 
   botWs.on('open', () => {
@@ -96,7 +96,19 @@ wss.on('connection', (vobizWs, request) => {
 
 
 // Python standalone voice agent URL
-const PYTHON_AGENT_URL = process.env.PYTHON_AGENT_URL || 'http://localhost:8765';
+const VOICE_AGENT_BASE_URL = process.env.VOICE_AGENT_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8765';
+const PYTHON_AGENT_URL = VOICE_AGENT_BASE_URL;
+
+// Helper to derive WS URL from HTTP URL
+const getWsUrl = (baseUrl) => {
+  try {
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    return url.origin;
+  } catch (e) {
+    return 'ws://localhost:8765';
+  }
+};
 
 // ─── 1. POST /api/voice/start — Spawn bot for a campaign ─────────────────────
 router.post('/start', authMiddleware, async (req, res) => {
