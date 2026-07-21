@@ -5,6 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
+import redisClient from '../redis.js';
 
 const router = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -77,6 +78,10 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
   let authId = process.env.VOBIZ_AUTH_ID || 'MA_XXXXXX';
 
   try {
+    // Increment active calls in Redis and set TTL to 300 seconds
+    await redisClient.incr(`active_calls:${clinicId}`);
+    await redisClient.expire(`active_calls:${clinicId}`, 300);
+
     // Fetch clinic details from DB, fallback to VOBIZ environment variables
     let clinicPhone = process.env.VOBIZ_FROM_NUMBER || '+14155551234';
     let authToken = process.env.VOBIZ_AUTH_TOKEN || 'your_vobiz_auth_token';
@@ -189,6 +194,12 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
     console.error(`URL Attempted:`, `https://api.vobiz.ai/api/v1/Account/${authId}/Call/`);
     console.error(`Error details:`, err.cause || err);
     await db.query(`UPDATE calls SET call_status = 'failed', ended_at = now() WHERE id = $1`, [callId]);
+    
+    // Decrement the counter immediately if the call failed to place
+    const currentCount = await redisClient.decr(`active_calls:${clinicId}`);
+    if (currentCount < 0) {
+      await redisClient.set(`active_calls:${clinicId}`, 0);
+    }
     throw err;
   }
 }
@@ -312,12 +323,9 @@ router.post('/start', authMiddleware, async (req, res) => {
                 return;
               }
 
-              // Count currently active calls for this clinic
-              const activeCallsResult = await db.query(
-                `SELECT COUNT(*) FROM calls WHERE clinic_id = $1 AND call_status IN ('queued', 'in_progress')`,
-                [req.clinicId]
-              );
-              const activeCount = parseInt(activeCallsResult.rows[0].count) || 0;
+              // Count currently active calls for this clinic via Redis
+              const activeCountVal = await redisClient.get(`active_calls:${req.clinicId}`);
+              const activeCount = parseInt(activeCountVal) || 0;
 
               // Fetch concurrency setting for clinic
               const clinicSettingsResult = await db.query(
@@ -675,13 +683,22 @@ router.post('/vobiz-hangup', async (req, res) => {
   let foundCampaignId = null;
   try {
     const callResult = await db.query(
-      `SELECT campaign_id, call_status, outcome FROM calls WHERE id = $1 LIMIT 1`,
+      `SELECT campaign_id, clinic_id, call_status, outcome FROM calls WHERE id = $1 LIMIT 1`,
       [callId]
     );
     if (callResult.rows.length > 0) {
-      foundCampaignId = callResult.rows[0].campaign_id;
-      const currentStatus = callResult.rows[0].call_status;
-      const currentOutcome = callResult.rows[0].outcome;
+      const { campaign_id, clinic_id, call_status, outcome } = callResult.rows[0];
+      foundCampaignId = campaign_id;
+      const currentStatus = call_status;
+      const currentOutcome = outcome;
+
+      // Decrement the counter in Redis
+      if (clinic_id) {
+        const currentCount = await redisClient.decr(`active_calls:${clinic_id}`);
+        if (currentCount < 0) {
+          await redisClient.set(`active_calls:${clinic_id}`, 0);
+        }
+      }
 
       // If the outcome is not set (null) or is 'other', the call didn't reach a definitive outcome
       // (e.g. busy, unanswered, hung up early, no response). We convert it to callback queue.
