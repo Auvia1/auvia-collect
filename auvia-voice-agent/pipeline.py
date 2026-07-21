@@ -1218,11 +1218,11 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     context = LLMContext(messages, tools=get_tools_schema())
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # 🛡️ STRICT VAD: Requires 1.0s of sustained, high-confidence speech to interrupt
+    # 🛡️ STRICT VAD: Fixed for short words and concurrent CPU load
     custom_vad = SileroVADAnalyzer(params=VADParams(
         stop_secs=0.8, 
-        start_secs=1.0,    # Ignored unless user speaks continuously for 1.0s
-        confidence=0.75    # High confidence required to ignore background static
+        start_secs=0.2,    # 🚀 CHANGED: Must be 0.2 to catch normal speech!
+        confidence=0.70    # 🚀 Lowered slightly to pick up audio better
     ))
 
     transport = FastAPIWebsocketTransport(

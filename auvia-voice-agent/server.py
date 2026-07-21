@@ -1,9 +1,14 @@
+#server.py
 import os
 
-# 🚀 1. Prevent PyTorch from choking the Event Loop
+# 🚀 1. Prevent PyTorch AND ONNX from choking the Event Loop on a 2-core server
 os.environ["GRPC_DNS_RESOLVER"] = "native"
 os.environ["GRPC_POLL_STRATEGY"] = "poll"
 os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["ORT_DEFAULT_NUM_THREADS"] = "1" # <-- 🚀 CRITICAL: Stops ONNX from freezing concurrent calls
 
 import torch
 torch.set_num_threads(1)
