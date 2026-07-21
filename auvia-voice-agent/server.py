@@ -588,5 +588,5 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
     logger.info(f"✅ Call {call_id} WebSocket handler complete")
 
 if __name__ == "__main__":
-    # 🚀 3. Single worker, natively handling concurrent async calls!
-    uvicorn.run("server:app", host="0.0.0.0", port=AGENT_PORT, log_level="info")
+    # 🚀 Set to 3 workers for a 2-Core Server handling max 2 concurrent calls
+    uvicorn.run("server:app", host="0.0.0.0", port=AGENT_PORT, workers=3, log_level="info")
