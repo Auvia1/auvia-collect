@@ -1,6 +1,12 @@
 version: '3.8'
 
 services:
+  # 🚀 ADDED: Dedicated internal Redis container
+  redis:
+    image: redis:7-alpine
+    container_name: auvia-collect-redis
+    restart: always
+
   express-backend:
     build:
       context: ./server
@@ -13,7 +19,9 @@ services:
       - 'BOT_SECRET=${BOT_SECRET}'
       - 'FRONTEND_URL=${FRONTEND_URL}'
       - 'VOICE_AGENT_URL=http://voice-agent:8765'
-      - 'REDIS_URL=${REDIS_URL}'
+      - 'REDIS_URL=redis://redis:6379' # 🚀 Points directly to the local container
+    depends_on:
+      - redis
     restart: always
 
   voice-agent:
@@ -30,13 +38,8 @@ services:
       - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
       - 'SARVAM_API_KEY=${SARVAM_API_KEY}'
       - 'GEMINI_API_KEY=${GEMINI_API_KEY}'
-      - 'REDIS_URL=${REDIS_URL}'
+      - 'REDIS_URL=redis://redis:6379' # 🚀 Points directly to the local container
     depends_on:
       - express-backend
+      - redis
     restart: always
-
-# 🚀 ADD THIS ENTIRE BLOCK TO THE BOTTOM
-networks:
-  default:
-    name: coolify
-    external: true
