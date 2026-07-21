@@ -842,7 +842,7 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 
 from tools.vobiz_serializer import VobizFrameSerializer
-from tools.pipecat_tools import register_all_tools, get_tools_schema
+from tools.pipecat_tools import register_all_tools, get_tools_schema, send_payment_link_tool
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
@@ -1238,7 +1238,20 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     tts = SarvamTTSService(api_key=os.getenv("SARVAM_API_KEY"), sample_rate=8000, settings=SarvamTTSService.Settings(model="bulbul:v3", voice="ritu"))
     llm = GoogleLLMService(api_key=os.getenv("GEMINI_API_KEY"), settings=GoogleLLMService.Settings(model="gemini-2.5-flash"))
 
-    register_all_tools(llm, CLINIC_ID, db_pool, session)
+    register_all_tools(llm, CLINIC_ID)
+
+    async def send_payment_link_wrapper(params: FunctionCallParams):
+        """Wrapper that automatically injects active call state variables."""
+        # Fallback to session variables if LLM leaves them blank
+        amt = float(CONTACT_AMOUNT) if CONTACT_AMOUNT else 0.0
+        ph = CONTACT_PHONE
+        p_name = CONTACT_NAME
+        c_id = CALL_ID
+        return await send_payment_link_tool(params, amount=amt, phone=ph, patient_name=p_name, call_id=c_id)
+    send_payment_link_wrapper.__name__ = "send_payment_link"
+    
+    # Register this wrapped version instead:
+    llm.register_direct_function(send_payment_link_wrapper)
 
     tracker = ConversationTracker()
     lang_processor = AutoLanguageProcessor(CALL_ID, greeting_text)
