@@ -1108,9 +1108,11 @@ class BillingTracker(FrameProcessor):
         self.llm_out_tokens = 0
         self.timer_start = time.time()
         self.bot_context = bot_context
+        self.session_identifier = session_identifier
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        try: await super().process_frame(frame, direction)
+        try:
+            await super().process_frame(frame, direction)
         except Exception as e:
             if "StartFrame not received" in str(e): return
             raise e
@@ -1119,19 +1121,56 @@ class BillingTracker(FrameProcessor):
             self.tts_char_count += len(frame.text)
             self.llm_out_tokens += len(frame.text) / 4.0
             
-        try: await self.push_frame(frame, direction)
+        try:
+            await self.push_frame(frame, direction)
         except Exception as e:
             if "StartFrame not received" not in str(e): raise e
 
     def generate_breakdown(self) -> dict:
-        duration_minutes = (time.time() - self.timer_start) / 60.0
+        duration_seconds = time.time() - self.timer_start
+        duration_minutes = duration_seconds / 60.0
         billed_minutes = math.ceil(duration_minutes) if duration_minutes > 0 else 1
+        inr_multiplier = 94.94
+        
+        telephony_cost = billed_minutes * 0.65
+        stt_cost = duration_minutes * 0.50
+        recording_cost = billed_minutes * 0.10
+        
+        tts_cost = self.tts_char_count * 0.003
+
+        messages_json = json.dumps(self.bot_context.messages)
+        llm_in_tokens = int(len(messages_json) / 4.0)
+        llm_out_tokens = int(self.llm_out_tokens)
+        llm_in_cost = (llm_in_tokens * (0.30 / 1_000_000)) * inr_multiplier
+        llm_out_cost = (llm_out_tokens * (1.05 / 1_000_000)) * inr_multiplier
+
+        whatsapp_msg_count = 0
+        for msg in self.bot_context.messages:
+            if msg.get("role") == "user" and "parts" in msg:
+                for part in msg["parts"]:
+                    if "function_response" in part:
+                        func_resp = part["function_response"]
+                        if func_resp.get("name") == "voice_agent_book_appointment":
+                            resp_data = func_resp.get("response", {})
+                            if isinstance(resp_data, str):
+                                try: resp_data = json.loads(resp_data)
+                                except: pass
+                            if isinstance(resp_data, dict) and resp_data.get("status") == "success":
+                                whatsapp_msg_count += 1
+
+        whatsapp_cost = whatsapp_msg_count * 0.20
+        total_cost = stt_cost + tts_cost + llm_in_cost + llm_out_cost + telephony_cost + whatsapp_cost + recording_cost
+        
         return {
-            "duration": time.time() - self.timer_start,
-            "stt_cost": billed_minutes * 0.50,
-            "tts_cost": self.tts_char_count * 0.003,
-            "telephony_cost": billed_minutes * 0.65,
-            "credits_billed": billed_minutes
+            "duration_seconds": round(duration_seconds, 2), "duration_minutes": round(duration_minutes, 2),
+            "billed_minutes": billed_minutes, "stt_cost": round(stt_cost, 4), "stt_provider": "Sarvam",
+            "tts_cost": round(tts_cost, 4), "tts_provider": "Sarvam AI", "tts_chars": self.tts_char_count,
+            "llm_in_cost": round(llm_in_cost, 4), "llm_in_tokens": llm_in_tokens,
+            "llm_out_cost": round(llm_out_cost, 4), "llm_out_tokens": llm_out_tokens,
+            "telephony_cost": round(telephony_cost, 4), "telephony_provider": "Vobiz",
+            "whatsapp_cost": round(whatsapp_cost, 4), "whatsapp_msg_type": "Utility Msg" if whatsapp_msg_count > 0 else "None",
+            "other_cost": round(recording_cost, 4), "total_cost": round(total_cost, 4),
+            "cost_per_minute": round(total_cost / max(duration_minutes, 1.0), 4)
         }
 
 class PipecatBugFixProcessor(FrameProcessor):

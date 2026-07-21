@@ -573,25 +573,32 @@ router.post('/lead', async (req, res) => {
         await db.query(
           `INSERT INTO public.call_cost_breakdown (
              call_id, clinic_id, duration_seconds, duration_minutes, stt_cost, stt_provider, 
-             tts_cost, tts_provider, llm_in_cost, llm_out_cost, telephony_cost, telephony_provider, 
-             other_cost, credits_billed, total_cost, bill
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+             tts_cost, tts_provider, tts_chars, llm_in_cost, llm_in_tokens, llm_out_cost, llm_out_tokens, 
+             telephony_cost, telephony_provider, whatsapp_cost, whatsapp_msg_type, other_cost, 
+             credits_billed, total_cost, cost_per_minute, bill
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
           [
             finalCallId || null,
             clinicId,
-            b.duration || durSecs,
-            (b.duration || durSecs) / 60.0,
+            b.duration_seconds || b.duration || durSecs,
+            b.duration_minutes || (b.duration || durSecs) / 60.0,
             b.stt_cost || 0,
-            'sarvam',
+            b.stt_provider || 'Sarvam',
             b.tts_cost || 0,
-            'smallest',
-            (b.llm_cost || 0) * 0.4, // split LLM cost between in and out
-            (b.llm_cost || 0) * 0.6,
+            b.tts_provider || 'Sarvam AI',
+            b.tts_chars || 0,
+            b.llm_in_cost || 0,
+            b.llm_in_tokens || 0,
+            b.llm_out_cost || 0,
+            b.llm_out_tokens || 0,
             b.telephony_cost || 0,
-            'vobiz',
-            0, // other_cost
+            b.telephony_provider || 'Vobiz',
+            b.whatsapp_cost || 0,
+            b.whatsapp_msg_type || 'None',
+            b.other_cost || 0,
             creditsBilled,
             b.total_cost || 0,
+            b.cost_per_minute || 0,
             JSON.stringify(b)
           ]
         );
