@@ -34,6 +34,7 @@ if os.getenv("GEMINI_API_KEY"):
     os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")
 
 AGENT_PORT = int(os.getenv("AGENT_PORT", "8765"))
+VOBIZ_API_URL = os.getenv("VOBIZ_API_URL", "https://api.vobiz.ai/api/v1/Account")
 BOT_SECRET = os.getenv("AUVIA_BOT_SECRET")
 
 # 🚀 2. Global DB and Redis clients for multi-worker shared state
@@ -70,9 +71,9 @@ async def lifespan(app: FastAPI):
     if _db_pool: await _db_pool.close()
     if _redis_client: await _redis_client.close()
 
-app = FastAPI(title="Auvia Voice Agent", lifespan=lifespan)
+app = FastAPI(title="Auvia Voice Agent - Standalone Telephony", lifespan=lifespan)
 
-class PrepareCallRequest(BaseModel):
+class InitiateCallRequest(BaseModel):
     campaignId: str
     clinicId: str
     clinicName: str = "Auvia Wellness"
@@ -91,32 +92,37 @@ async def health():
         "db_connected": _db_pool is not None
     }
 
+
 # =============================================================================
-# 🚀 1. FRONTEND INITIATION (Bypasses Node.js)
+# 📞 1. FRONTEND INITIATION ROUTE (Direct to Python)
 # =============================================================================
 @app.post("/call/initiate")
-async def initiate_call(req: PrepareCallRequest, request: Request):
-    """Frontend calls this. Python fetches auth, triggers Vobiz, and maps the session."""
+async def initiate_call(req: InitiateCallRequest, request: Request):
+    """Frontend calls this directly. Python pulls clinic auth, hits Vobiz, caches state."""
     if not _db_pool:
         return Response(status_code=500, content="Database not connected")
 
     db_call_id = None
     try:
-        # Fetch Clinic's Vobiz Credentials & Phone Number
+        # Fetch Clinic's Vobiz credentials and sender phone from PostgreSQL
         async with _db_pool.acquire() as conn:
             clinic_row = await conn.fetchrow(
-                "SELECT vobiz_auth_id, vobiz_auth_token, phone FROM clinics WHERE id = $1", 
+                "SELECT vobiz_auth_id, vobiz_auth_token, phone, system_prompt FROM clinics WHERE id = $1", 
                 uuid.UUID(req.clinicId)
             )
             
         if not clinic_row or not clinic_row["vobiz_auth_id"]:
-            return {"status": "error", "message": "Clinic Vobiz credentials missing"}
+            return {"status": "error", "message": "Clinic Vobiz credentials missing in database"}
 
         auth_id = clinic_row["vobiz_auth_id"]
         auth_token = clinic_row["vobiz_auth_token"]
         from_phone = clinic_row["phone"]
+        
+        # Use database system prompt if request didn't supply one
+        if not req.systemPrompt and clinic_row["system_prompt"]:
+            req.systemPrompt = clinic_row["system_prompt"]
 
-        # 1. Insert a new record in calls under 'queued' status before Vobiz call
+        # Insert a new record in calls under 'queued' status before Vobiz call
         async with _db_pool.acquire() as conn:
             call_row = await conn.fetchrow(
                 """INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
@@ -129,16 +135,27 @@ async def initiate_call(req: PrepareCallRequest, request: Request):
             )
             db_call_id = str(call_row["id"])
 
-        # Dynamically build Webhook URLs based on server's public host/domain
+        # Dynamically determine the public webhook URL based on request headers / configs
         public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL")
         if not public_url:
-            host = request.headers.get("host", "collectagent.nexovai.in")
+            host = request.headers.get("host", "api.nexovai.in")
             public_url = f"https://{host}"
 
         public_url = public_url.rstrip("/")
 
-        # Place outbound call using Vobiz REST API
-        vobiz_url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
+        # Format phone numbers cleanly
+        clean_to = str(req.contactPhone).strip().replace("+", "")
+        if clean_to.startswith("0") and len(clean_to) == 11:
+            clean_to = "91" + clean_to[1:]
+        elif len(clean_to) == 10:
+            clean_to = "91" + clean_to
+
+        clean_from = str(from_phone).strip().replace("+", "")
+
+        # Correct Vobiz Outbound API Endpoint format
+        vobiz_endpoint = f"{VOBIZ_API_URL}/{auth_id}/Call/"
+
+        # Trigger Vobiz Outbound API Call
         headers = {
             "X-Auth-ID": auth_id,
             "X-Auth-Token": auth_token,
@@ -146,8 +163,8 @@ async def initiate_call(req: PrepareCallRequest, request: Request):
         }
         
         payload = {
-            "from": ''.join(filter(str.isdigit, from_phone)),
-            "to": ''.join(filter(str.isdigit, req.contactPhone)),
+            "from": clean_from,
+            "to": clean_to,
             "answer_url": f"{public_url}/vobiz-answer?callId={db_call_id}",
             "answer_method": "POST",
             "hangup_url": f"{public_url}/vobiz-hangup?callId={db_call_id}",
@@ -157,47 +174,52 @@ async def initiate_call(req: PrepareCallRequest, request: Request):
             "record_method": "POST"
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                vobiz_url,
+                vobiz_endpoint,
                 headers=headers,
-                json=payload,
-                timeout=15.0
+                json=payload
             )
             
             if resp.status_code not in [200, 201]:
-                logger.error(f"❌ Vobiz API Error: {resp.status_code} - {resp.text}")
-                # Mark call as failed in database
+                logger.error(f"❌ Vobiz API Error ({resp.status_code}): {resp.text}")
                 async with _db_pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE calls SET call_status = 'failed', ended_at = NOW() WHERE id = $1",
                         uuid.UUID(db_call_id)
                     )
-                return {"status": "error", "message": "Failed to initiate call with telecom provider"}
+                return {"status": "error", "message": f"Vobiz rejection: {resp.text}"}
                 
             vobiz_data = resp.json()
-            vobiz_call_id = vobiz_data.get("request_uuid") or vobiz_data.get("api_id") or str(uuid.uuid4())
+            # Extract Vobiz Call ID
+            vobiz_call_id = (
+                vobiz_data.get("request_uuid") or 
+                vobiz_data.get("api_id") or 
+                vobiz_data.get("CallUUID") or 
+                vobiz_data.get("sid") or 
+                str(uuid.uuid4())
+            )
 
-        # Update the call row with actual telephony UUID
+        # Update call log with actual Vobiz Call UUID
         async with _db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE calls SET telephony_call_id = $1 WHERE id = $2",
                 vobiz_call_id, uuid.UUID(db_call_id)
             )
 
-        # Save session under the ACTUAL Vobiz Call ID so the WebSocket finds it instantly
+        # Map session details and cache in Redis under the exact Vobiz Call ID
         session_data = req.model_dump()
         session_data["callId"] = db_call_id
         session_data["telephonyCallId"] = vobiz_call_id
         
         if _redis_client:
             await _redis_client.setex(f"ws_session:{vobiz_call_id}", 600, json.dumps(session_data))
-            logger.info(f"✅ Call Initiated & Cached: {vobiz_call_id} (DB ID: {db_call_id}) for {req.contactName}")
+            logger.info(f"✅ Call Initiated & Cached in Redis: {vobiz_call_id} (DB ID: {db_call_id}) for {req.contactName}")
 
         return {"status": "dialing", "callId": db_call_id, "telephonyCallId": vobiz_call_id}
 
     except Exception as e:
-        logger.error(f"❌ Initiation Error: {e}")
+        logger.error(f"❌ Standalone Initiation Error: {e}", exc_info=True)
         if db_call_id:
             try:
                 async with _db_pool.acquire() as conn:
@@ -211,14 +233,14 @@ async def initiate_call(req: PrepareCallRequest, request: Request):
 
 
 # =============================================================================
-# 🚀 2. VOBIZ ANSWER WEBHOOK (Generates XML)
+# 📄 2. VOBIZ ANSWER WEBHOOK (Returns Stream & Record XML)
 # =============================================================================
 @app.post("/vobiz-answer")
 async def vobiz_answer(request: Request):
-    """Vobiz hits this when the patient answers. We return the Stream and Record XML."""
+    """Vobiz hits this when the patient picks up the phone."""
     public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL")
     if not public_url:
-        host = request.headers.get("host", "collectagent.nexovai.in")
+        host = request.headers.get("host", "api.nexovai.in")
         public_url = f"https://{host}"
     
     public_url = public_url.rstrip("/")
@@ -237,10 +259,10 @@ async def vobiz_answer(request: Request):
             data = {k: v[0] for k, v in parsed.items()}
             
         call_sid = data.get("CallUUID") or data.get("CallSid") or data.get("request_uuid") or data.get("callId", "unknown")
-        logger.info(f"📞 Vobiz answered! Returning XML for call_sid={call_sid}, db_call_id={db_call_id}")
+        logger.info(f"📞 Vobiz answered! Generating stream XML for call {call_sid}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to parse Vobiz payload: {e}")
+        logger.error(f"❌ Failed to parse Vobiz answer payload: {e}")
         call_sid = "unknown"
 
     ws_url = f"wss://{host_only}/ws/{call_sid}"
@@ -360,11 +382,11 @@ async def vobiz_hangup(request: Request):
 
 
 # =============================================================================
-# 🚀 4. VOBIZ RECORDING WEBHOOK (Updates DB Directly)
+# 🎙️ 4. VOBIZ RECORDING WEBHOOK (Attaches MP3 to Database)
 # =============================================================================
 @app.post("/vobiz-recording")
 async def vobiz_recording(request: Request):
-    """Catches the MP3 URL from Vobiz and updates the Postgres call log natively."""
+    """Catches call recording URL from Vobiz and links it directly to PostgreSQL."""
     db_call_id = request.query_params.get("callId")
     try:
         data = {}
@@ -376,15 +398,25 @@ async def vobiz_recording(request: Request):
 
         if not data:
             try: data = await request.json()
-            except Exception: pass
+            except Exception: data = {}
 
-        call_uuid = data.get("call_uuid") or data.get("CallUUID") or data.get("CallSid") or data.get("callId")
-        record_url = data.get("recording_url") or data.get("RecordingURL") or data.get("recordingUrl") or data.get("RecordingUrl") or data.get("RecordUrl")
+        call_uuid = (
+            data.get("call_uuid") or 
+            data.get("CallUUID") or 
+            data.get("CallSid") or 
+            data.get("callId")
+        )
+        record_url = (
+            data.get("recording_url") or 
+            data.get("RecordingURL") or 
+            data.get("RecordingUrl") or 
+            data.get("RecordUrl")
+        )
 
         if not record_url:
             return {"status": "ignored"}
 
-        logger.info(f"🎙️ Recording received for telephony sid={call_uuid}, db_call_id={db_call_id}. Updating database...")
+        logger.info(f"🎙️ Recording received for Call UUID {call_uuid} / db_call_id {db_call_id} -> {record_url}")
 
         if _db_pool:
             async with _db_pool.acquire() as conn:
@@ -414,9 +446,9 @@ async def vobiz_recording(request: Request):
                         record_url, call_uuid, call_uuid
                     )
                 if updated_id:
-                    logger.info(f"✅ Successfully attached recording to call log DB ID: {updated_id}")
+                    logger.info(f"✅ Successfully attached recording URL to Postgres call ID: {updated_id}")
                 else:
-                    logger.warning(f"⚠️ Recording received, but no matching call found in DB for SID {call_uuid} / DB ID {db_call_id}")
+                    logger.warning(f"⚠️ Recording webhook received, but no matching call row found for Vobiz SID: {call_uuid}")
 
         return {"status": "success"}
     except Exception as e:
@@ -425,7 +457,7 @@ async def vobiz_recording(request: Request):
 
 
 # =============================================================================
-# 🚀 5. PIPECAT WEBSOCKET
+# ⚡ 5. PIPECAT REAL-TIME WEBSOCKET RUNNER
 # =============================================================================
 @app.websocket("/ws/{call_id}")
 async def websocket_endpoint(ws: WebSocket, call_id: str):
@@ -438,27 +470,20 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
             session_str = await _redis_client.get(f"ws_session:{call_id}")
             if session_str:
                 session = json.loads(session_str)
-                logger.info(f"✅ Successfully retrieved session from Redis for {call_id}")
+                logger.info(f"✅ Successfully retrieved session state from Redis for {call_id}")
         except Exception as re:
             logger.error(f"Redis get session failed: {re}")
 
-    # Robust database query fallback if Redis cache was a miss or empty
+    # Fallback safety check if Redis cache expired or missed
     if not session or not session.get("systemPrompt"):
-        logger.info(f"🔍 Session or system prompt missing in Redis/memory for call {call_id}. Fetching from DB fallback...")
+        logger.warning(f"⚠️ Session missing in Redis for {call_id}. Checking database fallback...")
         if _db_pool:
             try:
                 async with _db_pool.acquire() as conn:
-                    # Parse call_id as UUID safely
-                    db_call_id = call_id
-                    try:
-                        db_call_id = uuid.UUID(call_id)
-                    except Exception:
-                        pass
-                    
-                    # 1. Fetch call info by telephony_call_id
+                    # Search by telephony_call_id since vobiz_call_sid is set only after call ends
                     call_row = await conn.fetchrow(
-                        "SELECT id, campaign_id, clinic_id, contact_id FROM calls WHERE telephony_call_id = $1 OR id = $2",
-                        call_id, db_call_id
+                        "SELECT id, campaign_id, clinic_id, contact_id FROM calls WHERE telephony_call_id = $1", 
+                        call_id
                     )
                     if call_row:
                         db_call_id_str = str(call_row["id"])
@@ -466,48 +491,29 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
                         clinic_id = str(call_row["clinic_id"])
                         contact_id = str(call_row["contact_id"])
                         
-                        # 2. Fetch clinic info (system prompt and name)
-                        clinic_row = await conn.fetchrow(
-                            "SELECT system_prompt, name FROM clinics WHERE id = $1",
-                            uuid.UUID(clinic_id) if len(clinic_id) == 36 else clinic_id
-                        )
-                        
-                        # 3. Fetch contact info
-                        contact_row = await conn.fetchrow(
-                            "SELECT name, phone, amount_due, payment_context FROM contacts WHERE id = $1",
-                            uuid.UUID(contact_id) if len(contact_id) == 36 else contact_id
-                        )
-                        
-                        if clinic_row and contact_row:
-                            system_prompt = clinic_row["system_prompt"]
-                            clinic_name = clinic_row["name"]
-                            contact_name = contact_row["name"]
-                            contact_phone = contact_row["phone"]
-                            contact_amount = str(contact_row["amount_due"])
-                            payment_context = contact_row["payment_context"]
-                            
+                        clinic_rec = await conn.fetchrow("SELECT system_prompt, name FROM clinics WHERE id = $1", call_row["clinic_id"])
+                        contact_rec = await conn.fetchrow("SELECT name, phone, amount_due, payment_context FROM contacts WHERE id = $1", call_row["contact_id"])
+                        if clinic_rec and contact_rec:
                             session = {
                                 "callId": db_call_id_str,
                                 "campaignId": campaign_id,
                                 "clinicId": clinic_id,
-                                "clinicName": clinic_name,
+                                "clinicName": clinic_rec["name"],
                                 "contactId": contact_id,
-                                "contactName": contact_name,
-                                "contactPhone": contact_phone,
-                                "contactAmount": contact_amount,
-                                "paymentReason": payment_context,
-                                "systemPrompt": system_prompt
+                                "contactName": contact_rec["name"],
+                                "contactPhone": contact_rec["phone"],
+                                "contactAmount": str(contact_rec["amount_due"]),
+                                "paymentReason": contact_rec["payment_context"] or "outstanding balance",
+                                "systemPrompt": clinic_rec["system_prompt"]
                             }
                             logger.info(f"✅ Successfully restored session details from database fallback for call {call_id}")
-            except Exception as db_err:
-                logger.error(f"🚨 Database fallback query failed: {db_err}")
+            except Exception as dbe:
+                logger.error(f"Fallback DB query failed: {dbe}")
 
-    # Hard safety fallback if still empty or not found
     if not session or not session.get("systemPrompt"):
-        logger.error(f"🚨 CRITICAL: Missing session for {call_id}! Falling back to default.")
         session = {
             "callId": call_id,
-            "systemPrompt": "You are Meher, a professional billing assistant calling from Auvia Wellness Center to follow up on your outstanding payment."
+            "systemPrompt": "You are Meher, a professional billing assistant calling from Auvia Wellness Center."
         }
     else:
         # Ensure the dict callId maps to the database call ID if available
@@ -516,15 +522,14 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
     try:
         await run_bot(ws, session, _db_pool)
     except WebSocketDisconnect:
-        logger.info(f"Call {call_id}: WebSocket disconnected")
+        logger.info(f"Call {call_id}: WebSocket disconnected cleanly")
     except Exception as e:
-        logger.error(f"Call {call_id} error: {e}")
-        try:
-            await ws.close()
-        except Exception:
-            pass
+        logger.error(f"Call {call_id} execution error: {e}", exc_info=True)
+        try: await ws.close()
+        except Exception: pass
 
     logger.info(f"✅ Call {call_id} WebSocket handler complete")
+
 
 if __name__ == "__main__":
     # 🚀 Set to 3 workers for a 2-Core Server handling max 2 concurrent calls
