@@ -64,7 +64,25 @@ export default function BuyCredits() {
       // 1. Create order on the backend
       const res = await api.rechargeCredits(selectedPackage.credits, selectedPackage.price)
       
-      // 2. Setup checkout options
+      // If it's a mock transaction (no real Razorpay keys configured), bypass checkout.js
+      if (res.isMock) {
+        setTimeout(async () => {
+          try {
+            const confirmRes = await api.confirmMockRecharge(res.orderId)
+            setCredits(confirmRes.newBalance)
+            setSuccessMsg(`Successfully purchased ${selectedPackage.credits} (Test Mode) credits!`)
+            closeConfirmModal()
+            setTimeout(() => setSuccessMsg(''), 5000)
+          } catch (err) {
+            setError(err.message || 'Mock payment confirmation failed.')
+          } finally {
+            setRecharging(false)
+          }
+        }, 1500)
+        return
+      }
+
+      // 2. Setup checkout options for real Razorpay
       const options = {
         key: res.key,
         amount: res.amount,
@@ -75,20 +93,13 @@ export default function BuyCredits() {
         handler: async function (paymentResponse) {
           setRecharging(true)
           try {
-            if (res.isMock) {
-              // Confirm order directly to immediately credit balance locally
-              const confirmRes = await api.confirmMockRecharge(res.orderId)
-              setCredits(confirmRes.newBalance)
-              setSuccessMsg(`Successfully purchased ${selectedPackage.credits} credits!`)
-            } else {
-              setSuccessMsg('Payment completed! Your credit balance will update shortly once verified.')
-              setTimeout(async () => {
-                const updated = await api.getSettings().catch(() => ({}));
-                if (updated && updated.credits !== undefined) {
-                  setCredits(updated.credits)
-                }
-              }, 4000)
-            }
+            setSuccessMsg('Payment completed! Your credit balance will update shortly once verified.')
+            setTimeout(async () => {
+              const updated = await api.getSettings().catch(() => ({}));
+              if (updated && updated.credits !== undefined) {
+                setCredits(updated.credits)
+              }
+            }, 4000)
             closeConfirmModal()
             setTimeout(() => setSuccessMsg(''), 5000)
           } catch (err) {
