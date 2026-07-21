@@ -1027,9 +1027,13 @@ class STTTextCleanerProcessor(FrameProcessor):
             clean_text = re.sub(r'[^\w\s\u0900-\u097F\u0C00-\u0C7F]', '', stt_raw_text).strip()
             
             if self.bot_is_speaking:
-                if len(clean_text) <= 2 or clean_text in self.grunts or clean_text in self.backchannels: return
+                # 🚀 FIX: Increased length check to 4 to catch short unicode like "हाँ"
+                if len(clean_text) <= 4 or clean_text in self.grunts or clean_text in self.backchannels: 
+                    logger.debug(f"🗑️ Dropped mid-sentence interruption: '{stt_raw_text}'")
+                    return
             else:
-                if len(clean_text) <= 1 or clean_text in self.grunts: return
+                if len(clean_text) <= 1 or clean_text in self.grunts: 
+                    return
 
             logger.info(f"[{self.session_identifier}] 🎤 USER SAID: {stt_raw_text}")
             for wrong_val, right_val in self.lexicon_fixes.items():
@@ -1218,10 +1222,10 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     context = LLMContext(messages, tools=get_tools_schema())
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # 🛡️ STRICT VAD: Requires 600ms of sustained, high-confidence speech to interrupt
+    # 🛡️ STRICT VAD: Requires 1.0s of sustained, high-confidence speech to interrupt
     custom_vad = SileroVADAnalyzer(params=VADParams(
         stop_secs=0.8, 
-        start_secs=0.6,    # Ignored unless user speaks continuously for 600ms
+        start_secs=1.0,    # Ignored unless user speaks continuously for 1.0s
         confidence=0.75    # High confidence required to ignore background static
     ))
 
