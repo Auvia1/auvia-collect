@@ -1010,8 +1010,8 @@ class STTTextCleanerProcessor(FrameProcessor):
         self.lang_processor = lang_processor
         self.bot_is_speaking = False
         self.lexicon_fixes = {"పార్లమెంట్": "అపాయింట్మెంట్", "apartment": "appointment", "అపార్ట్మెంట్": "అపాయింట్మెంట్"}
+        # Removed valid affirmations from the ignore list
         self.grunts = {"hmm", "hm", "hmmm", "ha", "haa", "ah", "ahh", "uh", "um", "oh", "हम्म", "ओह", "ఉం", "ఆ"}
-        self.backchannels = {"ok", "okay", "yeah", "yes", "yep", "हां", "जी", "अच्छा", "ఓకే", "అవును", "సరే"}
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         try: await super().process_frame(frame, direction)
@@ -1026,14 +1026,10 @@ class STTTextCleanerProcessor(FrameProcessor):
             stt_raw_text = frame.text.strip().lower()
             clean_text = re.sub(r'[^\w\s\u0900-\u097F\u0C00-\u0C7F]', '', stt_raw_text).strip()
             
-            if self.bot_is_speaking:
-                # 🚀 FIX: Increased length check to 4 to catch short unicode like "हाँ"
-                if len(clean_text) <= 4 or clean_text in self.grunts or clean_text in self.backchannels: 
-                    logger.debug(f"🗑️ Dropped mid-sentence interruption: '{stt_raw_text}'")
-                    return
-            else:
-                if len(clean_text) <= 1 or clean_text in self.grunts: 
-                    return
+            # 🚀 FIX: Drop grunts and 1-letter mic static, but ALLOW "yes/no" even if it overlaps with the bot
+            if clean_text in self.grunts or len(clean_text) <= 1:
+                logger.debug(f"[{self.session_identifier}] 🗑️ Dropped background noise/grunt: '{stt_raw_text}'")
+                return
 
             logger.info(f"[{self.session_identifier}] 🎤 USER SAID: {stt_raw_text}")
             for wrong_val, right_val in self.lexicon_fixes.items():
