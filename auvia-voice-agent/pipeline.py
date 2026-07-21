@@ -1276,9 +1276,12 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
         nonlocal greeted
         if greeted: return
         greeted = True
-        logger.info(f"Client connected. Bypassing LLM latency -> playing immediate audio.")
+        logger.info(f"Client connected. Buffering for 500ms to allow Vobiz stream to open...")
+        
+        # ⚡ AUDIO SYNC FIX: Give Vobiz half a second to bridge the call before speaking
+        await asyncio.sleep(0.5)
+        
         tracker.call_start = time.time()
-        # ⚡ FAST AUDIO FIX: Instantly emit frame (append_to_context=False since injected above)
         await task.queue_frames([TTSSpeakFrame(text=greeting_text)])
 
     @transport.event_handler("on_error")

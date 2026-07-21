@@ -428,37 +428,10 @@
 #             logger.warning(f"⚠️ No session found for call {call_id} — using defaults")
 #             session = {"callId": call_id}
 #         else:
-#             session["callId"] = call_id
-
-#         try:
-#             await run_pipeline_for_call(ws, session)
-#         except WebSocketDisconnect:
-#             logger.info(f"Call {call_id}: WebSocket disconnected")
-#         except Exception as e:
-#             logger.error(f"Call {call_id} error: {e}")
-#             try:
-#                 await ws.close()
-#             except Exception:
-#                 pass
-
-#     logger.info(f"✅ Call {call_id} WebSocket handler complete")
-
-
-# # =============================================================================
-# # Entry point
-# # =============================================================================
-# if __name__ == "__main__":
-#     uvicorn.run(
-#         app,
-#         host="0.0.0.0",
-#         port=AGENT_PORT,
-#         log_level="info",
-#     )
-
 #server.py
 import os
 
-# 🚀 1. THE SECRET SAUCE: Prevent PyTorch from choking the Event Loop
+# 🚀 1. Prevent PyTorch from choking the Event Loop
 os.environ["GRPC_DNS_RESOLVER"] = "native"
 os.environ["GRPC_POLL_STRATEGY"] = "poll"
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -467,47 +440,48 @@ import torch
 torch.set_num_threads(1)
 
 import asyncio
-import time
-import sys
+import json
 import uuid
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 
 import asyncpg
+import redis.asyncio as redis
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from loguru import logger
 from pydantic import BaseModel
 
-# ⚡ Import the bot directly instead of using subprocesses
 from pipeline import run_bot
 
 # ── Load .env ──────────────────────────────────────────────────────────────────
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
-# Sync Gemini key so google-genai SDK picks it up
-_gemini_key = os.getenv("GEMINI_API_KEY")
-if _gemini_key:
-    os.environ["GOOGLE_API_KEY"] = _gemini_key
+if os.getenv("GEMINI_API_KEY"):
+    os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")
 
-# ── Constants ──────────────────────────────────────────────────────────────────
 AGENT_PORT = int(os.getenv("AGENT_PORT", "8765"))
-NODE_URL   = os.getenv("NODE_URL", "http://localhost:5001")
 BOT_SECRET = os.getenv("AUVIA_BOT_SECRET")
-AGENT_DIR  = Path(__file__).parent
 
-# ── Session store: call_id → session dict ──────────────────────────────────────
-pending_sessions: dict[str, dict] = {}
+# 🚀 2. Global DB and Redis clients for multi-worker shared state
 _db_pool: Optional[asyncpg.Pool] = None
+_redis_client: Optional[redis.Redis] = None
 
-# =============================================================================
-# FastAPI App & Lifespan
-# =============================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _db_pool
+    global _db_pool, _redis_client
+    
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        try:
+            _redis_client = redis.from_url(redis_url, decode_responses=True)
+            await _redis_client.ping()
+            logger.info("✅ Redis connected successfully for cross-worker state")
+        except Exception as e:
+            logger.error(f"❌ Redis connection failed: {e}")
+
     db_url = os.getenv("DATABASE_URL")
     if db_url:
         try:
@@ -520,12 +494,10 @@ async def lifespan(app: FastAPI):
             logger.error(f"DB pool init failed: {e}")
 
     logger.info(f"🚀 Auvia Voice Agent server started natively on port {AGENT_PORT}")
-
     yield
 
-    if _db_pool:
-        await _db_pool.close()
-    logger.info("👋 Auvia Voice Agent server stopped")
+    if _db_pool: await _db_pool.close()
+    if _redis_client: await _redis_client.close()
 
 app = FastAPI(title="Auvia Voice Agent", lifespan=lifespan)
 
@@ -545,37 +517,40 @@ class PrepareCallRequest(BaseModel):
 async def health():
     return {
         "status": "ok",
-        "pending_calls": len(pending_sessions)
+        "redis_connected": _redis_client is not None,
+        "db_connected": _db_pool is not None
     }
 
 @app.post("/call/prepare")
 async def prepare_call(req: PrepareCallRequest):
-    """
-    Called by Node.js BEFORE placing the Vobiz outbound call.
-    Stores session context natively in memory.
-    """
-    session = req.model_dump()
-    pending_sessions[req.callId] = session
-    logger.info(f"📋 Session prepared: {req.callId} for {req.contactName}")
+    """Stores session context in Redis so ANY worker can pick it up"""
+    session_data = req.model_dump()
+    if _redis_client:
+        await _redis_client.setex(f"ws_session:{req.callId}", 300, json.dumps(session_data))
+        logger.info(f"📋 Session cached in Redis: {req.callId} for {req.contactName}")
     return {"status": "ready", "callId": req.callId}
 
 @app.websocket("/ws/{call_id}")
 async def websocket_endpoint(ws: WebSocket, call_id: str):
-    """
-    Node's WS proxy connects here. We pass it directly to the Pipecat runner.
-    """
     await ws.accept()
     logger.info(f"🔌 WebSocket connected for call {call_id}")
 
-    session = pending_sessions.pop(call_id, None)
-    
-    # Fallback / robustness query from the database if session cache is missing
-    if session is None or not session.get("systemPrompt"):
-        logger.info(f"🔍 Session or system prompt missing in memory for call {call_id}. Fetching details from database...")
+    session = None
+    if _redis_client:
+        try:
+            session_str = await _redis_client.get(f"ws_session:{call_id}")
+            if session_str:
+                session = json.loads(session_str)
+                logger.info(f"✅ Successfully retrieved session from Redis for {call_id}")
+        except Exception as re:
+            logger.error(f"Redis get session failed: {re}")
+
+    # Robust database query fallback if Redis cache was a miss or empty
+    if not session or not session.get("systemPrompt"):
+        logger.info(f"🔍 Session or system prompt missing in Redis/memory for call {call_id}. Fetching from DB fallback...")
         if _db_pool:
             try:
                 async with _db_pool.acquire() as conn:
-                    # Parse call_id as UUID safely
                     db_call_id = call_id
                     try:
                         db_call_id = uuid.UUID(call_id)
@@ -612,7 +587,6 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
                             contact_amount = str(contact_row["amount_due"])
                             payment_context = contact_row["payment_context"]
                             
-                            # Reconstruct session dict
                             session = {
                                 "callId": call_id,
                                 "campaignId": campaign_id,
@@ -625,22 +599,17 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
                                 "paymentReason": payment_context,
                                 "systemPrompt": system_prompt
                             }
-                            logger.info(f"✅ Successfully restored session details from database for call {call_id}")
+                            logger.info(f"✅ Successfully restored session details from database fallback for call {call_id}")
             except Exception as db_err:
-                logger.error(f"🚨 Failed to load fallback details from database for call {call_id}: {db_err}")
+                logger.error(f"🚨 Database fallback query failed: {db_err}")
 
     # Hard safety fallback if still empty or not found
-    system_prompt = session.get("systemPrompt") if session else None
-    if not system_prompt:
-        logger.error(f"🚨 CRITICAL: Clinic loaded with an empty system prompt! Falling back to default.")
-        system_prompt = "You are Meher, a professional billing assistant calling from Auvia Wellness Center to follow up on your outstanding payment."
-        if session:
-            session["systemPrompt"] = system_prompt
-        else:
-            session = {
-                "callId": call_id,
-                "systemPrompt": system_prompt
-            }
+    if not session or not session.get("systemPrompt"):
+        logger.error(f"🚨 CRITICAL: Missing session for {call_id}! Falling back to default.")
+        session = {
+            "callId": call_id,
+            "systemPrompt": "You are Meher, a professional billing assistant calling from Auvia Wellness Center to follow up on your outstanding payment."
+        }
     else:
         session["callId"] = call_id
 
