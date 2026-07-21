@@ -1127,7 +1127,7 @@ class BillingTracker(FrameProcessor):
             if "StartFrame not received" not in str(e): raise e
 
     def generate_breakdown(self) -> dict:
-        duration_seconds = time.time() - self.timer_start
+        duration_seconds = max(1.0, time.time() - self.timer_start)
         duration_minutes = duration_seconds / 60.0
         billed_minutes = math.ceil(duration_minutes) if duration_minutes > 0 else 1
         inr_multiplier = 94.94

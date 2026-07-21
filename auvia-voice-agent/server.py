@@ -469,6 +469,7 @@ torch.set_num_threads(1)
 import asyncio
 import time
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -567,9 +568,79 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
     logger.info(f"🔌 WebSocket connected for call {call_id}")
 
     session = pending_sessions.pop(call_id, None)
-    if session is None:
-        logger.warning(f"⚠️ No session found for call {call_id} — using defaults")
-        session = {"callId": call_id}
+    
+    # Fallback / robustness query from the database if session cache is missing
+    if session is None or not session.get("systemPrompt"):
+        logger.info(f"🔍 Session or system prompt missing in memory for call {call_id}. Fetching details from database...")
+        if _db_pool:
+            try:
+                async with _db_pool.acquire() as conn:
+                    # Parse call_id as UUID safely
+                    db_call_id = call_id
+                    try:
+                        db_call_id = uuid.UUID(call_id)
+                    except Exception:
+                        pass
+                    
+                    # 1. Fetch call info
+                    call_row = await conn.fetchrow(
+                        "SELECT campaign_id, clinic_id, contact_id FROM calls WHERE id = $1",
+                        db_call_id
+                    )
+                    if call_row:
+                        campaign_id = str(call_row["campaign_id"])
+                        clinic_id = str(call_row["clinic_id"])
+                        contact_id = str(call_row["contact_id"])
+                        
+                        # 2. Fetch clinic info (system prompt and name)
+                        clinic_row = await conn.fetchrow(
+                            "SELECT system_prompt, name FROM clinics WHERE id = $1",
+                            uuid.UUID(clinic_id) if len(clinic_id) == 36 else clinic_id
+                        )
+                        
+                        # 3. Fetch contact info
+                        contact_row = await conn.fetchrow(
+                            "SELECT name, phone, amount_due, payment_context FROM contacts WHERE id = $1",
+                            uuid.UUID(contact_id) if len(contact_id) == 36 else contact_id
+                        )
+                        
+                        if clinic_row and contact_row:
+                            system_prompt = clinic_row["system_prompt"]
+                            clinic_name = clinic_row["name"]
+                            contact_name = contact_row["name"]
+                            contact_phone = contact_row["phone"]
+                            contact_amount = str(contact_row["amount_due"])
+                            payment_context = contact_row["payment_context"]
+                            
+                            # Reconstruct session dict
+                            session = {
+                                "callId": call_id,
+                                "campaignId": campaign_id,
+                                "clinicId": clinic_id,
+                                "clinicName": clinic_name,
+                                "contactId": contact_id,
+                                "contactName": contact_name,
+                                "contactPhone": contact_phone,
+                                "contactAmount": contact_amount,
+                                "paymentReason": payment_context,
+                                "systemPrompt": system_prompt
+                            }
+                            logger.info(f"✅ Successfully restored session details from database for call {call_id}")
+            except Exception as db_err:
+                logger.error(f"🚨 Failed to load fallback details from database for call {call_id}: {db_err}")
+
+    # Hard safety fallback if still empty or not found
+    system_prompt = session.get("systemPrompt") if session else None
+    if not system_prompt:
+        logger.error(f"🚨 CRITICAL: Clinic loaded with an empty system prompt! Falling back to default.")
+        system_prompt = "You are Meher, a professional billing assistant calling from Auvia Wellness Center to follow up on your outstanding payment."
+        if session:
+            session["systemPrompt"] = system_prompt
+        else:
+            session = {
+                "callId": call_id,
+                "systemPrompt": system_prompt
+            }
     else:
         session["callId"] = call_id
 
