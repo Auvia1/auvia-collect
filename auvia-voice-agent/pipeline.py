@@ -1213,10 +1213,10 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
 
     greeting_text = f"Hello, am I speaking with {CONTACT_NAME}?" if CONTACT_NAME else "Hello, how can I help you today?"
 
-    # ⚡ FAST CONTEXT FIX: Pre-inject the greeting text so AI knows it spoke immediately
+    # 🚀 FIX: Only include the system prompt and the initial greeting. 
+    # Do NOT inject the assistant message into history, letting the event handler speak it naturally.
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "assistant", "content": greeting_text}
+        {"role": "system", "content": system_prompt}
     ]
     
     context = LLMContext(messages, tools=get_tools_schema())
@@ -1286,7 +1286,8 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
         await asyncio.sleep(0.5)
         
         tracker.call_start = time.time()
-        await task.queue_frames([TTSSpeakFrame(text=greeting_text)])
+        # 🚀 FIX: append_to_context=True ensures the AI remembers it said the greeting
+        await task.queue_frames([TTSSpeakFrame(text=greeting_text, append_to_context=True)])
 
     @transport.event_handler("on_error")
     async def on_error(transport, error, fatal):
