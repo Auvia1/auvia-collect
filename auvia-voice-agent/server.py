@@ -73,6 +73,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Auvia Voice Agent - Standalone Telephony", lifespan=lifespan)
 
+class PrepareCallRequest(BaseModel):
+    callId: str
+    campaignId: str
+    clinicId: str
+    clinicName: str = "Auvia Wellness"
+    contactId: str = ""
+    contactName: str = ""
+    contactPhone: str = ""
+    contactAmount: str = ""
+    paymentReason: str = "outstanding balance"
+    systemPrompt: str = ""
+
+@app.post("/call/prepare")
+async def prepare_call(req: PrepareCallRequest):
+    """Compatibility endpoint so Node.js campaign engine doesn't throw a 404"""
+    session_data = req.model_dump()
+    if _redis_client:
+        await _redis_client.setex(f"ws_session:{req.callId}", 600, json.dumps(session_data))
+        logger.info(f"📋 Session cached in Redis via /call/prepare: {req.callId} for {req.contactName}")
+    return {"status": "ready", "callId": req.callId}
+
 class InitiateCallRequest(BaseModel):
     campaignId: str
     clinicId: str
