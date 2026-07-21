@@ -456,9 +456,18 @@
 #     )
 
 #server.py
+import os
+
+# 🚀 1. THE SECRET SAUCE: Prevent PyTorch from choking the Event Loop
+os.environ["GRPC_DNS_RESOLVER"] = "native"
+os.environ["GRPC_POLL_STRATEGY"] = "poll"
+os.environ["OMP_NUM_THREADS"] = "1"
+
+import torch
+torch.set_num_threads(1)
+
 import asyncio
 import time
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -579,4 +588,5 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
     logger.info(f"✅ Call {call_id} WebSocket handler complete")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=AGENT_PORT, log_level="info")
+    # 🚀 3. Single worker, natively handling concurrent async calls!
+    uvicorn.run("server:app", host="0.0.0.0", port=AGENT_PORT, log_level="info")
