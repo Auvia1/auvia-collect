@@ -1238,7 +1238,7 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     tts = SarvamTTSService(api_key=os.getenv("SARVAM_API_KEY"), sample_rate=8000, settings=SarvamTTSService.Settings(model="bulbul:v3", voice="ritu"))
     llm = GoogleLLMService(api_key=os.getenv("GEMINI_API_KEY"), settings=GoogleLLMService.Settings(model="gemini-2.5-flash"))
 
-    register_all_tools(llm, CLINIC_ID)
+    register_all_tools(llm, CLINIC_ID, db_pool, session)
 
     tracker = ConversationTracker()
     lang_processor = AutoLanguageProcessor(CALL_ID, greeting_text)
