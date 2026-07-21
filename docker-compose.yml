@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   express-backend:
     build:
@@ -12,6 +13,7 @@ services:
       - 'BOT_SECRET=${BOT_SECRET}'
       - 'FRONTEND_URL=${FRONTEND_URL}'
       - 'VOICE_AGENT_URL=http://voice-agent:8765'
+      - 'REDIS_URL=${REDIS_URL}' # 🚀 Added Redis connection
     restart: always
 
   voice-agent:
@@ -20,15 +22,15 @@ services:
     ports:
       - '8765:8765'
     expose:
-      - '8765' # 🚀 ADD THIS: Explicitly tells Coolify's proxy to route the domain here
+      - '8765'
     labels:
-      # 🚀 FIX: Explicitly forces Coolify's proxy to route WebSockets to port 8765
       - "traefik.http.services.voice-agent.loadbalancer.server.port=8765"
     environment:
       - 'AUVIA_BACKEND_URL=http://express-backend:5001'
       - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
       - 'SARVAM_API_KEY=${SARVAM_API_KEY}'
       - 'GEMINI_API_KEY=${GEMINI_API_KEY}'
+      - 'REDIS_URL=${REDIS_URL}' # 🚀 Added Redis connection
     depends_on:
       - express-backend
     restart: always
