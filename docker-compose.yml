@@ -13,7 +13,7 @@ services:
       - 'BOT_SECRET=${BOT_SECRET}'
       - 'FRONTEND_URL=${FRONTEND_URL}'
       - 'VOICE_AGENT_URL=http://voice-agent:8765'
-      - 'REDIS_URL=${REDIS_URL}' # 🚀 Added Redis connection
+      - 'REDIS_URL=${REDIS_URL}'
     restart: always
 
   voice-agent:
@@ -30,7 +30,13 @@ services:
       - 'AUVIA_BOT_SECRET=${BOT_SECRET}'
       - 'SARVAM_API_KEY=${SARVAM_API_KEY}'
       - 'GEMINI_API_KEY=${GEMINI_API_KEY}'
-      - 'REDIS_URL=${REDIS_URL}' # 🚀 Added Redis connection
+      - 'REDIS_URL=${REDIS_URL}'
     depends_on:
       - express-backend
     restart: always
+
+# 🚀 ADD THIS ENTIRE BLOCK TO THE BOTTOM
+networks:
+  default:
+    name: coolify
+    external: true
