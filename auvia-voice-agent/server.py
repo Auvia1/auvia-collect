@@ -1,434 +1,3 @@
-# #server.py
-# #!/usr/bin/env python3
-# """
-# Auvia Voice Agent — Standalone Server
-# ======================================
-# Run independently in a separate terminal:
-#     cd auvia-voice-agent
-#     uv run python server.py
-
-# Architecture:
-#   Vobiz ──► Node WS proxy ──► Python FastAPI /ws/{call_id}
-#             ──► spawns pipeline.py subprocess (on dynamic port)
-#             ──► Python websockets bridge ──► pipeline.py Pipecat server
-
-# Node.js calls POST /call/prepare with session data before placing the Vobiz call.
-# When Vobiz audio arrives via Node proxy, this server bridges it to Pipecat.
-# """
-# import asyncio
-# import time
-# import json
-# import os
-# import sys
-# import socket
-# import subprocess
-# import uuid
-# from pathlib import Path
-# from typing import Optional
-# from contextlib import asynccontextmanager
-
-# import asyncpg
-# import uvicorn
-# import websockets
-# from dotenv import load_dotenv
-# from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-# from loguru import logger
-# from pydantic import BaseModel
-
-# # ── Load .env ──────────────────────────────────────────────────────────────────
-# load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
-
-# # Sync Gemini key so google-genai SDK picks it up
-# _gemini_key = os.getenv("GEMINI_API_KEY")
-# if _gemini_key:
-#     os.environ["GOOGLE_API_KEY"] = _gemini_key
-
-# # ── Constants ──────────────────────────────────────────────────────────────────
-# AGENT_PORT = int(os.getenv("AGENT_PORT", "8765"))
-# NODE_URL   = os.getenv("NODE_URL", "http://localhost:5001")
-# BOT_SECRET = os.getenv("AUVIA_BOT_SECRET", "auvia_bot_secret_2025")
-# AGENT_DIR  = Path(__file__).parent
-
-# # Resolve Python binary from .venv (same venv that runs server.py itself)
-# def _find_python() -> str:
-#     for candidate in [
-#         AGENT_DIR / ".venv" / "bin" / "python",
-#         AGENT_DIR / ".venv" / "Scripts" / "python.exe",
-#     ]:
-#         if candidate.exists():
-#             return str(candidate)
-#     return sys.executable  # fallback: same Python that runs this server
-
-# PYTHON_BIN    = _find_python()
-# PIPELINE_SCRIPT = str(AGENT_DIR / "pipeline.py")
-
-# # ── Session store: call_id → session dict ──────────────────────────────────────
-# pending_sessions: dict[str, dict] = {}
-
-# # ── Shared DB pool ─────────────────────────────────────────────────────────────
-# _db_pool: Optional[asyncpg.Pool] = None
-
-
-# def find_free_port() -> int:
-#     """Get a free TCP port dynamically."""
-#     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-#         s.bind(("127.0.0.1", 0))
-#         return s.getsockname()[1]
-
-
-# async def wait_for_port(port: int, host: str = "127.0.0.1", timeout: float = 10.0) -> bool:
-#     """Wait until a TCP port is accepting connections."""
-#     deadline = asyncio.get_event_loop().time() + timeout
-#     while asyncio.get_event_loop().time() < deadline:
-#         try:
-#             _, writer = await asyncio.wait_for(
-#                 asyncio.open_connection(host, port), timeout=0.3
-#             )
-#             writer.close()
-#             await writer.wait_closed()
-#             return True
-#         except (ConnectionRefusedError, OSError, asyncio.TimeoutError):
-#             await asyncio.sleep(0.2)
-#     return False
-
-
-# # =============================================================================
-# # Bridge logic — connects Vobiz WebSocket (from Node proxy) to Pipecat subprocess
-# # =============================================================================
-# async def bridge_websockets(vobiz_ws: WebSocket, pipecat_uri: str, call_id: str):
-#     """
-#     Bridge frames bidirectionally between:
-#       - vobiz_ws  : FastAPI WebSocket (Node proxy → Vobiz audio)
-#       - pipecat_ws: Python websockets connection to pipeline.py
-#     """
-#     # 🔧 Construct the HTTP Origin header to bypass Pipecat's strict 403 CORS checks
-#     origin_uri = pipecat_uri.replace("ws://", "http://").replace("wss://", "https://")
-
-#     try:
-#         # 🔧 Inject the origin parameter directly (compatible with websockets >= 14.0)
-#         async with websockets.connect(
-#             pipecat_uri,
-#             origin=origin_uri
-#         ) as pipecat_ws:
-#             logger.info(f"🌉 Bridge connected for call {call_id}: {pipecat_uri}")
-
-#             async def vobiz_to_pipecat():
-#                 """Forward audio from Vobiz → Pipecat."""
-#                 try:
-#                     while True:
-#                         msg = await vobiz_ws.receive()
-#                         if "text" in msg:
-#                             await pipecat_ws.send(msg["text"])
-#                         elif "bytes" in msg:
-#                             await pipecat_ws.send(msg["bytes"])
-#                         elif "type" in msg and msg["type"] == "websocket.disconnect":
-#                             break
-#                 except (WebSocketDisconnect, Exception) as e:
-#                     logger.debug(f"[Vobiz→Pipecat] ended ({type(e).__name__})")
-
-
-#             async def pipecat_to_vobiz():
-#                 """Forward audio from Pipecat → Vobiz."""
-#                 try:
-#                     async for message in pipecat_ws:
-#                         try:
-#                             if isinstance(message, bytes):
-#                                 await vobiz_ws.send_bytes(message)
-#                             else:
-#                                 await vobiz_ws.send_text(message)
-#                         except Exception:
-#                             break
-#                 except Exception as e:
-#                     logger.debug(f"[Pipecat→Vobiz] ended ({type(e).__name__})")
-
-#             # Run both directions concurrently; stop when either side closes
-#             done, pending = await asyncio.wait(
-#                 [
-#                     asyncio.create_task(vobiz_to_pipecat()),
-#                     asyncio.create_task(pipecat_to_vobiz()),
-#                 ],
-#                 return_when=asyncio.FIRST_COMPLETED,
-#             )
-#             for t in pending:
-#                 t.cancel()
-
-#     except (websockets.InvalidURI, websockets.WebSocketException, OSError) as e:
-#         logger.error(f"Bridge error for call {call_id}: {e}")
-#     except Exception as e:
-#         logger.error(f"Unexpected bridge error for call {call_id}: {e}")
-
-
-# # =============================================================================
-# # Pipeline runner — spawns pipeline.py and bridges audio
-# # =============================================================================
-# # ── Pre-spawned sessions store: call_id → {"process": Popen, "port": int, "session": dict, "created_at": float}
-# pre_spawned_sessions: dict[str, dict] = {}
-
-
-# async def cleanup_stale_pre_spawns():
-#     """Background loop to clean up pre-spawned processes that never connect."""
-#     while True:
-#         try:
-#             await asyncio.sleep(10)
-#             now = time.time()
-#             to_delete = []
-#             for call_id, item in list(pre_spawned_sessions.items()):
-#                 # Clean up if pre-spawned more than 90 seconds ago
-#                 if now - item["created_at"] > 90:
-#                     logger.warning(f"⏰ Pre-spawned session {call_id} expired without connection. Cleaning up...")
-#                     process = item["process"]
-#                     try:
-#                         process.terminate()
-#                         process.wait(timeout=2)
-#                     except Exception:
-#                         try:
-#                             process.kill()
-#                         except Exception:
-#                             pass
-#                     to_delete.append(call_id)
-#             for call_id in to_delete:
-#                 pre_spawned_sessions.pop(call_id, None)
-#         except asyncio.CancelledError:
-#             break
-#         except Exception as e:
-#             logger.error(f"Error in cleanup background task: {e}")
-#             await asyncio.sleep(5)
-
-
-# # =============================================================================
-# # Pipeline runner — spawns pipeline.py and bridges audio
-# # =============================================================================
-# def spawn_pipeline(session: dict) -> tuple[subprocess.Popen, int]:
-#     call_id       = session.get("callId", str(uuid.uuid4()))
-#     campaign_id   = session.get("campaignId", "")
-#     clinic_id     = session.get("clinicId", "")
-#     clinic_name   = session.get("clinicName", "Auvia Wellness")
-#     contact_id    = session.get("contactId", "")
-#     contact_name  = session.get("contactName", "")
-#     contact_phone = session.get("contactPhone", "")
-#     contact_amount= session.get("contactAmount", "")
-#     payment_reason= session.get("paymentReason", "outstanding balance")
-#     system_prompt = session.get("systemPrompt", "")
-
-#     # Dynamic port for this call's pipeline subprocess
-#     port = find_free_port()
-
-#     # Environment for pipeline.py subprocess
-#     env = {
-#         **os.environ,
-#         "CALL_ID":                   call_id,
-#         "AUVIA_CAMPAIGN_ID":         campaign_id,
-#         "AUVIA_CLINIC_ID":           clinic_id,
-#         "AUVIA_CLINIC_NAME":         clinic_name,
-#         "CONTACT_ID":                contact_id,
-#         "CONTACT_NAME":              contact_name,
-#         "CONTACT_PHONE":             contact_phone,
-#         "CONTACT_AMOUNT":            contact_amount,
-#         "CONTACT_PAYMENT_REASON":    payment_reason,
-#         "AUVIA_LEAD_CALLBACK_URL":   f"{NODE_URL}/api/voice/lead",
-#         "AUVIA_BOT_SECRET":          BOT_SECRET,
-#         "PYTHONIOENCODING":          "utf-8",
-#         "PYTHONUTF8":                "1",
-#     }
-#     if system_prompt:
-#         env["AUVIA_SYSTEM_PROMPT"] = system_prompt
-
-#     logger.info(f"🐍 Spawning pipeline.py on port {port} for call {call_id} ({contact_name}) in background...")
-#     process = subprocess.Popen(
-#         [PYTHON_BIN, PIPELINE_SCRIPT, "-t", "websocket", "--port", str(port)],
-#         cwd=str(AGENT_DIR),
-#         env=env,
-#         stdout=subprocess.PIPE,
-#         stderr=subprocess.PIPE,
-#     )
-
-#     # Stream subprocess output to our logger (non-blocking)
-#     def _log_output(stream, prefix: str):
-#         for line in stream:
-#             try:
-#                 logger.debug(f"[Pipeline:{call_id[:8]}] {prefix} {line.decode().rstrip()}")
-#             except Exception:
-#                 pass
-
-#     import threading
-#     threading.Thread(target=_log_output, args=(process.stdout, ""), daemon=True).start()
-#     threading.Thread(target=_log_output, args=(process.stderr, "ERR"), daemon=True).start()
-
-#     return process, port
-
-
-# async def run_pipeline_for_call(vobiz_ws: WebSocket, session: dict):
-#     call_id = session.get("callId", str(uuid.uuid4()))
-#     try:
-#         process, port = spawn_pipeline(session)
-#     except Exception as e:
-#         logger.error(f"Failed to spawn pipeline on demand: {e}")
-#         return
-
-#     # Wait for Pipecat's WebSocket server to become ready
-#     ready = await wait_for_port(port, host="127.0.0.1", timeout=12.0)
-#     if not ready:
-#         logger.error(f"❌ Pipeline subprocess did not start in time for call {call_id}")
-#         process.kill()
-#         return
-
-#     logger.info(f"✅ Pipeline ready on port {port}, bridging audio for call {call_id}")
-
-#     # Bridge Vobiz WebSocket ↔ Pipecat subprocess
-#     try:
-#         await bridge_websockets(vobiz_ws, f"ws://127.0.0.1:{port}/ws-client", call_id)
-#     finally:
-#         logger.info(f"🔚 Call {call_id} ended — cleaning up pipeline process (pid={process.pid})")
-#         loop = asyncio.get_running_loop()
-#         try:
-#             await loop.run_in_executor(None, lambda: process.wait(timeout=10.0))
-#             logger.info(f"✅ Pipeline process (pid={process.pid}) exited naturally.")
-#         except subprocess.TimeoutExpired:
-#             logger.warning(f"⚠️ Pipeline process (pid={process.pid}) did not exit naturally — terminating...")
-#             try:
-#                 process.terminate()
-#                 await loop.run_in_executor(None, lambda: process.wait(timeout=3.0))
-#             except subprocess.TimeoutExpired:
-#                 process.kill()
-
-
-# # =============================================================================
-# # FastAPI App
-# # =============================================================================
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     global _db_pool
-#     db_url = os.getenv("DATABASE_URL")
-#     if db_url:
-#         try:
-#             from tools.pool import init_tool_db
-#             # 🔧 FIX: Disabled statement cache to prevent PgBouncer crashes
-#             _db_pool = await asyncpg.create_pool(dsn=db_url, statement_cache_size=0)
-#             init_tool_db(_db_pool)
-#             logger.info("✅ DB pool initialized")
-#         except Exception as e:
-#             logger.error(f"DB pool init failed: {e}")
-
-#     logger.info(f"🚀 Auvia Voice Agent server started on port {AGENT_PORT}")
-#     logger.info(f"   Python binary: {PYTHON_BIN}")
-#     logger.info(f"   Pipeline script: {PIPELINE_SCRIPT}")
-
-#     # Start garbage collector task for expired pre-spawned processes
-#     cleanup_task = asyncio.create_task(cleanup_stale_pre_spawns())
-
-#     yield
-
-#     cleanup_task.cancel()
-#     # Clean up any remaining pre-spawned processes on exit
-#     for call_id, item in list(pre_spawned_sessions.items()):
-#         try:
-#             item["process"].terminate()
-#         except Exception:
-#             pass
-
-#     if _db_pool:
-#         await _db_pool.close()
-#     logger.info("👋 Auvia Voice Agent server stopped")
-
-
-# app = FastAPI(title="Auvia Voice Agent", lifespan=lifespan)
-
-
-# class PrepareCallRequest(BaseModel):
-#     callId: str
-#     campaignId: str
-#     clinicId: str
-#     clinicName: str = "Auvia Wellness"
-#     contactId: str = ""
-#     contactName: str = ""
-#     contactPhone: str = ""
-#     contactAmount: str = ""
-#     paymentReason: str = "outstanding balance"
-#     systemPrompt: str = ""
-
-
-# @app.get("/health")
-# async def health():
-#     return {
-#         "status": "ok",
-#         "pending_calls": len(pending_sessions) + len(pre_spawned_sessions),
-#         "python": PYTHON_BIN,
-#     }
-
-
-# @app.post("/call/prepare")
-# async def prepare_call(req: PrepareCallRequest):
-#     """
-#     Called by Node.js BEFORE placing the Vobiz outbound call.
-#     Pre-spawns pipeline.py subprocess so it's fully booted when the call connects.
-#     """
-#     session = req.model_dump()
-#     try:
-#         process, port = spawn_pipeline(session)
-#         pre_spawned_sessions[req.callId] = {
-#             "process": process,
-#             "port": port,
-#             "session": session,
-#             "created_at": time.time()
-#         }
-#         logger.info(f"📋 Session prepared & pipeline pre-spawned: {req.callId} on port {port} for {req.contactName}")
-#     except Exception as e:
-#         logger.error(f"Failed to pre-spawn pipeline for call {req.callId}: {e}")
-#         pending_sessions[req.callId] = session
-
-#     return {"status": "ready", "callId": req.callId}
-
-
-# @app.websocket("/ws/{call_id}")
-# async def websocket_endpoint(ws: WebSocket, call_id: str):
-#     """
-#     Node's WS proxy connects here when Vobiz audio starts flowing.
-#     We accept the connection, check if we have a pre-spawned pipeline,
-#     and bridge audio between Vobiz and the Pipecat subprocess.
-#     """
-#     await ws.accept()
-#     logger.info(f"🔌 WebSocket connected for call {call_id}")
-
-#     pre_spawned = pre_spawned_sessions.pop(call_id, None)
-#     if pre_spawned:
-#         process = pre_spawned["process"]
-#         port = pre_spawned["port"]
-        
-#         # Wait up to 10 seconds for the pre-spawned process port to be ready (usually ready instantly)
-#         ready = await wait_for_port(port, host="127.0.0.1", timeout=10.0)
-#         if not ready:
-#             logger.error(f"❌ Pre-spawned pipeline subprocess on port {port} not ready for call {call_id}")
-#             process.kill()
-#             try:
-#                 await ws.close()
-#             except Exception:
-#                 pass
-#             return
-
-#         logger.info(f"✅ Pre-spawned pipeline ready on port {port}, bridging audio for call {call_id}")
-#         try:
-#             await bridge_websockets(ws, f"ws://127.0.0.1:{port}/ws-client", call_id)
-#         finally:
-#             logger.info(f"🔚 Call {call_id} ended — cleaning up pipeline process (pid={process.pid})")
-#             loop = asyncio.get_running_loop()
-#             try:
-#                 await loop.run_in_executor(None, lambda: process.wait(timeout=10.0))
-#                 logger.info(f"✅ Pipeline process (pid={process.pid}) exited naturally.")
-#             except subprocess.TimeoutExpired:
-#                 logger.warning(f"⚠️ Pipeline process (pid={process.pid}) did not exit naturally — terminating...")
-#                 try:
-#                     process.terminate()
-#                     await loop.run_in_executor(None, lambda: process.wait(timeout=3.0))
-#                 except subprocess.TimeoutExpired:
-#                     process.kill()
-#     else:
-#         # Fallback: Spawn on demand
-#         session = pending_sessions.pop(call_id, None)
-#         if session is None:
-#             logger.warning(f"⚠️ No session found for call {call_id} — using defaults")
-#             session = {"callId": call_id}
-#         else:
-#server.py
 import os
 
 # 🚀 1. Prevent PyTorch from choking the Event Loop
@@ -442,6 +11,9 @@ torch.set_num_threads(1)
 import asyncio
 import json
 import uuid
+import datetime
+import urllib.parse
+import httpx
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -450,13 +22,12 @@ import asyncpg
 import redis.asyncio as redis
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from loguru import logger
 from pydantic import BaseModel
 
 from pipeline import run_bot
 
-# ── Load .env ──────────────────────────────────────────────────────────────────
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
 if os.getenv("GEMINI_API_KEY"):
@@ -502,7 +73,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Auvia Voice Agent", lifespan=lifespan)
 
 class PrepareCallRequest(BaseModel):
-    callId: str
     campaignId: str
     clinicId: str
     clinicName: str = "Auvia Wellness"
@@ -521,15 +91,342 @@ async def health():
         "db_connected": _db_pool is not None
     }
 
-@app.post("/call/prepare")
-async def prepare_call(req: PrepareCallRequest):
-    """Stores session context in Redis so ANY worker can pick it up"""
-    session_data = req.model_dump()
-    if _redis_client:
-        await _redis_client.setex(f"ws_session:{req.callId}", 300, json.dumps(session_data))
-        logger.info(f"📋 Session cached in Redis: {req.callId} for {req.contactName}")
-    return {"status": "ready", "callId": req.callId}
+# =============================================================================
+# 🚀 1. FRONTEND INITIATION (Bypasses Node.js)
+# =============================================================================
+@app.post("/call/initiate")
+async def initiate_call(req: PrepareCallRequest, request: Request):
+    """Frontend calls this. Python fetches auth, triggers Vobiz, and maps the session."""
+    if not _db_pool:
+        return Response(status_code=500, content="Database not connected")
 
+    db_call_id = None
+    try:
+        # Fetch Clinic's Vobiz Credentials & Phone Number
+        async with _db_pool.acquire() as conn:
+            clinic_row = await conn.fetchrow(
+                "SELECT vobiz_auth_id, vobiz_auth_token, phone FROM clinics WHERE id = $1", 
+                uuid.UUID(req.clinicId)
+            )
+            
+        if not clinic_row or not clinic_row["vobiz_auth_id"]:
+            return {"status": "error", "message": "Clinic Vobiz credentials missing"}
+
+        auth_id = clinic_row["vobiz_auth_id"]
+        auth_token = clinic_row["vobiz_auth_token"]
+        from_phone = clinic_row["phone"]
+
+        # 1. Insert a new record in calls under 'queued' status before Vobiz call
+        async with _db_pool.acquire() as conn:
+            call_row = await conn.fetchrow(
+                """INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
+                   VALUES ($1, $2, $3, 1, 'queued', NOW(), 'vobiz-pending', $4)
+                   RETURNING id""",
+                uuid.UUID(req.contactId) if req.contactId else None,
+                uuid.UUID(req.campaignId) if req.campaignId else None,
+                uuid.UUID(req.clinicId),
+                float(req.contactAmount) if req.contactAmount else 0.0
+            )
+            db_call_id = str(call_row["id"])
+
+        # Dynamically build Webhook URLs based on server's public host/domain
+        public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL")
+        if not public_url:
+            host = request.headers.get("host", "collectagent.nexovai.in")
+            public_url = f"https://{host}"
+
+        public_url = public_url.rstrip("/")
+
+        # Place outbound call using Vobiz REST API
+        vobiz_url = f"https://api.vobiz.ai/api/v1/Account/{auth_id}/Call/"
+        headers = {
+            "X-Auth-ID": auth_id,
+            "X-Auth-Token": auth_token,
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "from": ''.join(filter(str.isdigit, from_phone)),
+            "to": ''.join(filter(str.isdigit, req.contactPhone)),
+            "answer_url": f"{public_url}/vobiz-answer?callId={db_call_id}",
+            "answer_method": "POST",
+            "hangup_url": f"{public_url}/vobiz-hangup?callId={db_call_id}",
+            "hangup_method": "POST",
+            "record": True,
+            "record_url": f"{public_url}/vobiz-recording?callId={db_call_id}",
+            "record_method": "POST"
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                vobiz_url,
+                headers=headers,
+                json=payload,
+                timeout=15.0
+            )
+            
+            if resp.status_code not in [200, 201]:
+                logger.error(f"❌ Vobiz API Error: {resp.status_code} - {resp.text}")
+                # Mark call as failed in database
+                async with _db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE calls SET call_status = 'failed', ended_at = NOW() WHERE id = $1",
+                        uuid.UUID(db_call_id)
+                    )
+                return {"status": "error", "message": "Failed to initiate call with telecom provider"}
+                
+            vobiz_data = resp.json()
+            vobiz_call_id = vobiz_data.get("request_uuid") or vobiz_data.get("api_id") or str(uuid.uuid4())
+
+        # Update the call row with actual telephony UUID
+        async with _db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE calls SET telephony_call_id = $1 WHERE id = $2",
+                vobiz_call_id, uuid.UUID(db_call_id)
+            )
+
+        # Save session under the ACTUAL Vobiz Call ID so the WebSocket finds it instantly
+        session_data = req.model_dump()
+        session_data["callId"] = db_call_id
+        session_data["telephonyCallId"] = vobiz_call_id
+        
+        if _redis_client:
+            await _redis_client.setex(f"ws_session:{vobiz_call_id}", 600, json.dumps(session_data))
+            logger.info(f"✅ Call Initiated & Cached: {vobiz_call_id} (DB ID: {db_call_id}) for {req.contactName}")
+
+        return {"status": "dialing", "callId": db_call_id, "telephonyCallId": vobiz_call_id}
+
+    except Exception as e:
+        logger.error(f"❌ Initiation Error: {e}")
+        if db_call_id:
+            try:
+                async with _db_pool.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE calls SET call_status = 'failed', ended_at = NOW() WHERE id = $1",
+                        uuid.UUID(db_call_id)
+                    )
+            except:
+                pass
+        return {"status": "error", "message": str(e)}
+
+
+# =============================================================================
+# 🚀 2. VOBIZ ANSWER WEBHOOK (Generates XML)
+# =============================================================================
+@app.post("/vobiz-answer")
+async def vobiz_answer(request: Request):
+    """Vobiz hits this when the patient answers. We return the Stream and Record XML."""
+    public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL")
+    if not public_url:
+        host = request.headers.get("host", "collectagent.nexovai.in")
+        public_url = f"https://{host}"
+    
+    public_url = public_url.rstrip("/")
+    host_only = public_url.replace("https://", "").replace("http://", "")
+
+    db_call_id = request.query_params.get("callId", "")
+
+    try:
+        body_bytes = await request.body()
+        body_str = body_bytes.decode('utf-8', errors='ignore')
+
+        if "{" in body_str:
+            data = json.loads(body_str)
+        else:
+            parsed = urllib.parse.parse_qs(body_str)
+            data = {k: v[0] for k, v in parsed.items()}
+            
+        call_sid = data.get("CallUUID") or data.get("CallSid") or data.get("request_uuid") or data.get("callId", "unknown")
+        logger.info(f"📞 Vobiz answered! Returning XML for call_sid={call_sid}, db_call_id={db_call_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to parse Vobiz payload: {e}")
+        call_sid = "unknown"
+
+    ws_url = f"wss://{host_only}/ws/{call_sid}"
+    record_webhook = f"{public_url}/vobiz-recording?callId={db_call_id}"
+
+    vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Record 
+        recordSession="true" 
+        redirect="false" 
+        maxLength="7200"
+        callbackUrl="{record_webhook}" 
+        callbackMethod="POST" 
+        playBeep="true" 
+        fileFormat="mp3" 
+    />
+    <Stream 
+        bidirectional="true" 
+        keepCallAlive="true" 
+        contentType="audio/x-mulaw;rate=8000"
+    >{ws_url}</Stream>
+</Response>"""
+
+    return Response(content=vobiz_xml, media_type="application/xml")
+
+
+# =============================================================================
+# 🚀 3. VOBIZ HANGUP WEBHOOK (Cleanup and Callback logic)
+# =============================================================================
+@app.post("/vobiz-hangup")
+async def vobiz_hangup(request: Request):
+    db_call_id = request.query_params.get("callId")
+    logger.info(f"🔌 Vobiz Hangup received for db_call_id: {db_call_id}")
+    
+    if db_call_id and _db_pool:
+        try:
+            async with _db_pool.acquire() as conn:
+                # 1. Retrieve call and clinic info
+                call_row = await conn.fetchrow(
+                    "SELECT clinic_id, call_status, outcome FROM calls WHERE id = $1 LIMIT 1",
+                    uuid.UUID(db_call_id)
+                )
+                if call_row:
+                    clinic_id = call_row["clinic_id"]
+                    current_status = call_row["call_status"]
+                    current_outcome = call_row["outcome"]
+                    
+                    # 2. If call didn't reach definitive outcome, convert to callback queue
+                    if not current_outcome or current_outcome == "other":
+                        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
+                        callback_date = tomorrow.strftime("%Y-%m-%d")
+                        callback_time = "10:00:00"
+                        
+                        body_bytes = await request.body()
+                        body_str = body_bytes.decode('utf-8', errors='ignore')
+                        data = {}
+                        if "{" in body_str:
+                            try: data = json.loads(body_str)
+                            except: pass
+                        else:
+                            try:
+                                parsed = urllib.parse.parse_qs(body_str)
+                                data = {k: v[0] for k, v in parsed.items()}
+                            except: pass
+                        
+                        status_from_vobiz = (data.get("CallStatus") or data.get("status") or "").lower()
+                        cause_from_vobiz = (data.get("HangupCause") or data.get("hangup_cause") or "").lower()
+                        
+                        label = "Unanswered"
+                        if current_status == "in_progress":
+                            label = "Hung up"
+                        elif "busy" in [status_from_vobiz, cause_from_vobiz]:
+                            label = "Busy"
+                        elif "no-answer" in [status_from_vobiz, cause_from_vobiz]:
+                            label = "Unanswered"
+                        elif "failed" in [status_from_vobiz, cause_from_vobiz]:
+                            label = "Failed"
+                        else:
+                            label = "Unanswered" if current_status == "queued" else "Hung up"
+                            
+                        await conn.execute(
+                            """UPDATE calls 
+                               SET call_status = 'completed', 
+                                   outcome = 'call_later',
+                                   callback_date = $1,
+                                   callback_time = $2,
+                                   amount = 0,
+                                   ai_summary = $3,
+                                   ended_at = COALESCE(ended_at, NOW()),
+                                   updated_at = NOW()
+                               WHERE id = $4""",
+                            callback_date, callback_time, label, uuid.UUID(db_call_id)
+                        )
+                        logger.info(f"✅ Call {db_call_id} marked as callback 'call_later' ({label})")
+                    else:
+                        if current_status in ["in_progress", "queued"]:
+                            await conn.execute(
+                                """UPDATE calls 
+                                   SET call_status = 'completed', 
+                                       ended_at = COALESCE(ended_at, NOW()),
+                                       updated_at = NOW()
+                                   WHERE id = $1""",
+                                uuid.UUID(db_call_id)
+                            )
+                            logger.info(f"✅ Call {db_call_id} updated call_status to 'completed'")
+                    
+                    # 3. Decrement active calls counter in Redis
+                    if clinic_id and _redis_client:
+                        current_count = await _redis_client.decr(f"active_calls:{clinic_id}")
+                        if current_count < 0:
+                            await _redis_client.set(f"active_calls:{clinic_id}", 0)
+                            
+        except Exception as err:
+            logger.error(f"Error handling call record on hangup: {err}")
+            
+    return {"status": "success"}
+
+
+# =============================================================================
+# 🚀 4. VOBIZ RECORDING WEBHOOK (Updates DB Directly)
+# =============================================================================
+@app.post("/vobiz-recording")
+async def vobiz_recording(request: Request):
+    """Catches the MP3 URL from Vobiz and updates the Postgres call log natively."""
+    db_call_id = request.query_params.get("callId")
+    try:
+        data = {}
+        try:
+            form_data = await request.form()
+            data = dict(form_data)
+        except Exception:
+            pass
+
+        if not data:
+            try: data = await request.json()
+            except Exception: pass
+
+        call_uuid = data.get("call_uuid") or data.get("CallUUID") or data.get("CallSid") or data.get("callId")
+        record_url = data.get("recording_url") or data.get("RecordingURL") or data.get("recordingUrl") or data.get("RecordingUrl") or data.get("RecordUrl")
+
+        if not record_url:
+            return {"status": "ignored"}
+
+        logger.info(f"🎙️ Recording received for telephony sid={call_uuid}, db_call_id={db_call_id}. Updating database...")
+
+        if _db_pool:
+            async with _db_pool.acquire() as conn:
+                updated_id = None
+                if db_call_id:
+                    updated_id = await conn.fetchval(
+                        """UPDATE calls 
+                           SET recording_url = $1, 
+                               vobiz_call_sid = $2, 
+                               call_status = CASE WHEN call_status = 'in_progress' THEN 'completed' ELSE call_status END,
+                               ended_at = COALESCE(ended_at, NOW()),
+                               updated_at = NOW() 
+                           WHERE id = $3 
+                           RETURNING id""",
+                        record_url, call_uuid, uuid.UUID(db_call_id)
+                    )
+                else:
+                    updated_id = await conn.fetchval(
+                        """UPDATE calls 
+                           SET recording_url = $1, 
+                               vobiz_call_sid = $2, 
+                               call_status = CASE WHEN call_status = 'in_progress' THEN 'completed' ELSE call_status END,
+                               ended_at = COALESCE(ended_at, NOW()),
+                               updated_at = NOW() 
+                           WHERE telephony_call_id = $3 
+                           RETURNING id""",
+                        record_url, call_uuid, call_uuid
+                    )
+                if updated_id:
+                    logger.info(f"✅ Successfully attached recording to call log DB ID: {updated_id}")
+                else:
+                    logger.warning(f"⚠️ Recording received, but no matching call found in DB for SID {call_uuid} / DB ID {db_call_id}")
+
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"❌ Error processing recording webhook: {e}")
+        return {"status": "error"}
+
+
+# =============================================================================
+# 🚀 5. PIPECAT WEBSOCKET
+# =============================================================================
 @app.websocket("/ws/{call_id}")
 async def websocket_endpoint(ws: WebSocket, call_id: str):
     await ws.accept()
@@ -551,18 +448,20 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
         if _db_pool:
             try:
                 async with _db_pool.acquire() as conn:
+                    # Parse call_id as UUID safely
                     db_call_id = call_id
                     try:
                         db_call_id = uuid.UUID(call_id)
                     except Exception:
                         pass
                     
-                    # 1. Fetch call info
+                    # 1. Fetch call info by telephony_call_id
                     call_row = await conn.fetchrow(
-                        "SELECT campaign_id, clinic_id, contact_id FROM calls WHERE id = $1",
-                        db_call_id
+                        "SELECT id, campaign_id, clinic_id, contact_id FROM calls WHERE telephony_call_id = $1 OR id = $2",
+                        call_id, db_call_id
                     )
                     if call_row:
+                        db_call_id_str = str(call_row["id"])
                         campaign_id = str(call_row["campaign_id"])
                         clinic_id = str(call_row["clinic_id"])
                         contact_id = str(call_row["contact_id"])
@@ -588,7 +487,7 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
                             payment_context = contact_row["payment_context"]
                             
                             session = {
-                                "callId": call_id,
+                                "callId": db_call_id_str,
                                 "campaignId": campaign_id,
                                 "clinicId": clinic_id,
                                 "clinicName": clinic_name,
@@ -611,10 +510,10 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
             "systemPrompt": "You are Meher, a professional billing assistant calling from Auvia Wellness Center to follow up on your outstanding payment."
         }
     else:
-        session["callId"] = call_id
+        # Ensure the dict callId maps to the database call ID if available
+        pass
 
     try:
-        # ⚡ Native execution, no subprocess bridging required
         await run_bot(ws, session, _db_pool)
     except WebSocketDisconnect:
         logger.info(f"Call {call_id}: WebSocket disconnected")
