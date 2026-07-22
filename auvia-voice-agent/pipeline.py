@@ -1241,13 +1241,18 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
 
     register_all_tools(llm, CLINIC_ID)
 
-    async def send_payment_link_wrapper(params: FunctionCallParams):
+    async def send_payment_link_wrapper(params: FunctionCallParams, **kwargs):
         """Wrapper that automatically injects active call state variables."""
-        # Fallback to session variables if LLM leaves them blank
+        # We accept **kwargs so Python doesn't crash when the LLM passes arguments, 
+        # but we use our hardcoded session variables to ensure 100% accuracy.
         amt = float(CONTACT_AMOUNT) if CONTACT_AMOUNT else 0.0
-        ph = CONTACT_PHONE
+        
+        # Ensure we have the phone number from the session fallback
+        ph = str(session.get("contactPhone", "")) 
+        
         p_name = CONTACT_NAME
         c_id = CALL_ID
+        
         return await send_payment_link_tool(params, amount=amt, phone=ph, patient_name=p_name, call_id=c_id)
     send_payment_link_wrapper.__name__ = "send_payment_link"
     
