@@ -837,6 +837,7 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.sarvam.tts import SarvamTTSService
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
