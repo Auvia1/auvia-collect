@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../services/api.js'
 import Button from '../components/ui/Button.jsx'
 
@@ -165,138 +165,9 @@ function LoginForm({ onSuccess }) {
   )
 }
 
-// ── Register form ────────────────────────────────────────────────────────────
-function RegisterForm({ onSuccess }) {
-  const [fullName, setFullName] = useState('')
-  const [email,    setEmail]    = useState('')
-  const [password, setPassword] = useState('')
-  const [confirm,  setConfirm]  = useState('')
-  const [error,    setError]    = useState('')
-  const [loading,  setLoading]  = useState(false)
-  const [isPending, setIsPending] = useState(false)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    if (password !== confirm) return setError('Passwords do not match.')
-    if (password.length < 6)  return setError('Password must be at least 6 characters.')
-    setLoading(true)
-    try {
-      const data = await api.register(fullName, email, password)
-      if (data.pending) {
-        setIsPending(true)
-      } else {
-        onSuccess(data.user)
-      }
-    } catch (err) {
-      setError(err.message || 'Registration failed. Please try again.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (isPending) {
-    return (
-      <div className="flex flex-col items-center justify-center py-lg text-center gap-md">
-        <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-full flex items-center justify-center mb-2">
-          <span className="material-symbols-outlined text-[32px]">hourglass_empty</span>
-        </div>
-        <h3 className="text-xl font-bold text-on-surface">Account Pending Approval</h3>
-        <p className="text-body-md text-on-surface-variant max-w-[300px]">
-          Your account has been created successfully. A platform administrator will review your application shortly.
-        </p>
-        <p className="text-body-sm text-on-surface-variant">
-          You can log in once your account is approved.
-        </p>
-      </div>
-    )
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-md">
-      {error && <ErrorBanner message={error} />}
-
-      <Field
-        id="reg-name"
-        label="Full Name"
-        type="text"
-        placeholder="Dr. Jane Smith"
-        value={fullName}
-        onChange={e => setFullName(e.target.value)}
-        icon="person"
-      />
-      <Field
-        id="reg-email"
-        label="Work Email"
-        type="email"
-        placeholder="you@clinic.com"
-        value={email}
-        onChange={e => setEmail(e.target.value)}
-        icon="mail"
-      />
-      <Field
-        id="reg-password"
-        label="Password"
-        type="password"
-        placeholder="Min. 6 characters"
-        value={password}
-        onChange={e => setPassword(e.target.value)}
-        icon="lock"
-      />
-      <Field
-        id="reg-confirm"
-        label="Confirm Password"
-        type="password"
-        placeholder="Repeat your password"
-        value={confirm}
-        onChange={e => setConfirm(e.target.value)}
-        icon="lock_reset"
-      />
-
-      <Button
-        type="submit"
-        disabled={loading}
-        variant={loading ? 'disabled' : 'primary'}
-        icon={loading ? undefined : 'how_to_reg'}
-        className="mt-xs w-full justify-center"
-      >
-        {loading
-          ? <span className="flex items-center gap-xs">
-              <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"/>
-              </svg>
-              Creating account…
-            </span>
-          : 'Create Account'
-        }
-      </Button>
-    </form>
-  )
-}
-
-// ── Tab button ───────────────────────────────────────────────────────────────
-function TabBtn({ label, active, onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex-1 py-xs text-label-md font-label-md rounded-lg transition-all duration-150 ${
-        active
-          ? 'bg-primary text-on-primary shadow-sm'
-          : 'text-on-surface-variant hover:bg-surface-container-low'
-      }`}
-    >
-      {label}
-    </button>
-  )
-}
-
 // ── Main page ────────────────────────────────────────────────────────────────
 export default function Login() {
   const navigate = useNavigate()
-  const location = useLocation()
-  const [tab, setTab] = useState(location.hash === '#register' ? 'register' : 'login')
 
   useAuthRedirect(navigate)
 
@@ -329,29 +200,18 @@ export default function Login() {
         {/* Card */}
         <div className="w-full bg-surface-container-lowest rounded-2xl shadow-ambient border border-outline-variant/40 p-lg flex flex-col gap-md">
 
-          {/* Tab switcher */}
-          <div className="flex bg-surface-container-low rounded-xl p-xs gap-xs border border-outline-variant/30">
-            <TabBtn label="Sign In"        active={tab === 'login'}    onClick={() => setTab('login')}    />
-            <TabBtn label="Create Account" active={tab === 'register'} onClick={() => setTab('register')} />
-          </div>
-
           {/* Heading */}
           <div>
             <h2 className="font-display text-headline-md text-on-surface">
-              {tab === 'login' ? 'Welcome back' : 'Get started'}
+              Welcome back
             </h2>
             <p className="font-body text-body-sm text-on-surface-variant mt-xs">
-              {tab === 'login'
-                ? 'Sign in to your clinic portal.'
-                : 'Create your account to get started.'}
+              Sign in to your clinic portal.
             </p>
           </div>
 
           {/* Form */}
-          {tab === 'login'
-            ? <LoginForm    onSuccess={handleSuccess} />
-            : <RegisterForm onSuccess={handleSuccess} />
-          }
+          <LoginForm onSuccess={handleSuccess} />
         </div>
 
         {/* Footer note */}
