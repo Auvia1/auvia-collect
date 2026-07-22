@@ -12,7 +12,7 @@ from pipecat.services.sarvam.tts import SarvamTTSService
 
 from tools.pool import get_pool
 from tools.payment import generate_payment_link
-from tools.notify import send_whatsapp_text
+from tools.notify import send_whatsapp_text, send_payment_link_template
 
 # ==========================================================
 # 🛠️ TOOL FUNCTIONS
@@ -52,33 +52,30 @@ end_call.__name__ = "end_call"
 
 
 async def send_payment_link_tool(params: FunctionCallParams, amount: float, phone: str, patient_name: str, call_id: str):
-    """Generates a Razorpay link and sends it via WhatsApp."""
+    """Generates a Razorpay link and sends it as a Meta WhatsApp Template."""
     logger.info(f"💳 Tool invoked: send_payment_link for {patient_name} ({phone}) - ₹{amount}")
     
-    # We fetch the clinic configuration dynamically from the database using the db pool
     pool = get_pool()
-    razorpay_key_id = None
-    razorpay_key_secret = None
-    meta_token = None
-    meta_phone_id = None
+    razorpay_key_id, razorpay_key_secret = None, None
+    meta_token, meta_phone_id, hospital_name = None, None, "Auvia Wellness Center"
     
     try:
         async with pool.acquire() as conn:
-            # Get clinic credentials using the active call's clinic reference
             clinic_row = await conn.fetchrow("""
-                SELECT c.razorpay_key_id, c.razorpay_key_secret, c.meta_access_token, c.meta_phone_number_id 
+                SELECT c.name, c.razorpay_key_id, c.razorpay_key_secret, c.meta_access_token, c.meta_phone_number_id 
                 FROM calls cl
                 JOIN clinics c ON cl.clinic_id = c.id
                 WHERE cl.telephony_call_id = $1 OR cl.id::text = $1
             """, call_id)
             
             if clinic_row:
+                hospital_name = clinic_row["name"] or hospital_name
                 razorpay_key_id = clinic_row["razorpay_key_id"]
                 razorpay_key_secret = clinic_row["razorpay_key_secret"]
                 meta_token = clinic_row["meta_access_token"]
                 meta_phone_id = clinic_row["meta_phone_number_id"]
     except Exception as e:
-        logger.error(f"❌ Failed to fetch clinic credentials for payment tool: {e}")
+        logger.error(f"❌ Failed to fetch clinic credentials: {e}")
 
     # Fallback to environment variables if database configuration is missing
     if not razorpay_key_id:
@@ -104,11 +101,14 @@ async def send_payment_link_tool(params: FunctionCallParams, amount: float, phon
         await params.result_callback({"status": "error", "message": "Failed to generate link."})
         return
 
+    # Step 2: Extract the slug from Razorpay URL (e.g. "sample123" or "plink_xyz")
+    payment_slug = payment_url.rstrip("/").split("/")[-1]
+
     # Insert record into database `payment_links` table
     try:
         async with pool.acquire() as conn:
             call_row = await conn.fetchrow(
-                "SELECT id, contact_id, campaign_id, clinic_id FROM calls WHERE id::text = $1 OR telephony_call_id = $1",
+                "SELECT id, contact_id, campaign_id, clinic_id, payment_context FROM calls WHERE id::text = $1 OR telephony_call_id = $1",
                 call_id
             )
             if call_row:
@@ -116,12 +116,13 @@ async def send_payment_link_tool(params: FunctionCallParams, amount: float, phon
                 contact_id = call_row["contact_id"]
                 campaign_id = call_row["campaign_id"]
                 clinic_id = call_row["clinic_id"]
+                payment_reason = call_row["payment_context"] or "consultation fee"
 
                 pl_id = await conn.fetchval(
-                    """INSERT INTO payment_links (call_id, contact_id, campaign_id, clinic_id, short_url, amount, status, sent_via, sent_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, 'created', 'whatsapp', NOW())
+                    """INSERT INTO payment_links (call_id, contact_id, campaign_id, clinic_id, razorpay_link_id, short_url, amount, status, sent_via, sent_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, 'created', 'whatsapp', NOW())
                        RETURNING id""",
-                    db_call_id, contact_id, campaign_id, clinic_id, payment_url, amount
+                    db_call_id, contact_id, campaign_id, clinic_id, payment_slug, payment_url, amount
                 )
                 
                 # Also update outcome/status in calls table
@@ -134,15 +135,20 @@ async def send_payment_link_tool(params: FunctionCallParams, amount: float, phon
                        WHERE id = $1""",
                     db_call_id
                 )
+            else:
+                payment_reason = "consultation fee"
     except Exception as dberr:
         logger.error(f"❌ Database update error in payment tool: {dberr}")
+        payment_reason = "consultation fee"
 
-    # Step 2: Send via WhatsApp
-    message_body = f"Hello {patient_name}, here is your secure payment link for ₹{amount} from Auvia Wellness Center: {payment_url}"
-    
-    success = await send_whatsapp_text(
+    # Step 3: Send Meta WhatsApp Template
+    success = await send_payment_link_template(
         phone_number=phone,
-        message=message_body,
+        hospital_name=hospital_name,
+        patient_name=patient_name,
+        payment_reason=payment_reason,
+        amount=f"{float(amount):.2f}",
+        payment_slug=payment_slug,
         meta_access_token=meta_token,
         meta_phone_number_id=meta_phone_id
     )
@@ -150,7 +156,7 @@ async def send_payment_link_tool(params: FunctionCallParams, amount: float, phon
     if success:
         await params.result_callback({"status": "success", "url": payment_url})
     else:
-        await params.result_callback({"status": "error", "message": "Failed to send WhatsApp message."})
+        await params.result_callback({"status": "error", "message": "Failed to send WhatsApp template."})
 
 send_payment_link_tool.__name__ = "send_payment_link"
 

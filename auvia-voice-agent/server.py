@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from pipeline import run_bot
 from tools.whatsapp import verify_whatsapp_webhook, handle_whatsapp_webhook
+from tools.notify import send_whatsapp_text
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
@@ -495,6 +496,114 @@ async def get_whatsapp_webhook(request: Request):
 async def post_whatsapp_webhook(request: Request):
     """Receive event payload updates from Meta dashboard."""
     return await handle_whatsapp_webhook(request)
+
+
+# =============================================================================
+# 💳 4.6. RAZORPAY WEBHOOK CALLBACKS
+# =============================================================================
+@app.post("/razorpay-webhook")
+async def post_razorpay_webhook(request: Request):
+    """Processes successful patient payments from Razorpay webhook."""
+    try:
+        body = await request.json()
+        event = body.get("event")
+        logger.info(f"💳 Received Razorpay webhook event: {event}")
+        
+        if event == "payment_link.paid":
+            payload = body.get("payload", {})
+            pl_entity = payload.get("payment_link", {}).get("entity", {})
+            p_entity = payload.get("payment", {}).get("entity", {})
+            
+            plink_id = pl_entity.get("id")
+            short_url = pl_entity.get("short_url")
+            payment_id = p_entity.get("id")
+            amount_paid = float(p_entity.get("amount", 0)) / 100.0
+            method = p_entity.get("method", "upi")
+            
+            logger.info(f"✅ Patient payment captured: Link={plink_id} | Amount={amount_paid} | ID={payment_id}")
+            
+            if _db_pool:
+                async with _db_pool.acquire() as conn:
+                    # 1. Find the payment link record by razorpay_link_id or short_url
+                    pl_row = await conn.fetchrow(
+                        """SELECT id, call_id, contact_id, campaign_id, clinic_id, amount, status 
+                           FROM payment_links 
+                           WHERE razorpay_link_id = $1 OR short_url = $2 OR short_url LIKE $3 
+                           LIMIT 1""",
+                        plink_id, short_url, f"%{plink_id}"
+                    )
+                    
+                    if pl_row:
+                        pl_db_id = pl_row["id"]
+                        contact_id = pl_row["contact_id"]
+                        clinic_id = pl_row["clinic_id"]
+                        status = pl_row["status"]
+                        
+                        if status != "paid":
+                            # Start transaction
+                            tx = conn.transaction()
+                            await tx.start()
+                            try:
+                                # Update payment_link status to 'paid'
+                                await conn.execute(
+                                    "UPDATE payment_links SET status = 'paid', paid_at = NOW(), updated_at = NOW() WHERE id = $1",
+                                    pl_db_id
+                                )
+                                
+                                # Insert record into payments table
+                                await conn.execute(
+                                    """INSERT INTO payments (payment_link_id, contact_id, clinic_id, razorpay_payment_id, amount_paid, method, paid_at)
+                                       VALUES ($1, $2, $3, $4, $5, $6, NOW())""",
+                                    pl_db_id, contact_id, clinic_id, payment_id, amount_paid, method
+                                )
+                                
+                                # Update contacts outstanding balance
+                                await conn.execute(
+                                    "UPDATE contacts SET amount_due = GREATEST(0, amount_due - $1), updated_at = NOW() WHERE id = $2",
+                                    amount_paid, contact_id
+                                )
+                                
+                                await tx.commit()
+                                logger.info(f"Successfully recorded payment for link {plink_id} in DB.")
+                            except Exception as db_ex:
+                                await tx.rollback()
+                                logger.error(f"Failed to update database for payment: {db_ex}")
+                                raise db_ex
+                                
+                            # 2. Fetch contact and clinic details to send confirmation
+                            clinic_row = await conn.fetchrow(
+                                "SELECT name, meta_access_token, meta_phone_number_id FROM clinics WHERE id = $1",
+                                clinic_id
+                            )
+                            contact_row = await conn.fetchrow(
+                                "SELECT name, phone FROM contacts WHERE id = $1",
+                                contact_id
+                            )
+                            
+                            if clinic_row and contact_row:
+                                clinic_name = clinic_row["name"]
+                                meta_access_token = clinic_row["meta_access_token"]
+                                meta_phone_number_id = clinic_row["meta_phone_number_id"]
+                                patient_name = contact_row["name"]
+                                phone = contact_row["phone"]
+                                
+                                # Send WhatsApp confirmation message
+                                message = f"Thank you {patient_name}! We have received your payment of ₹{amount_paid:,.2f} for {clinic_name}. Your transaction ID is {payment_id}."
+                                await send_whatsapp_text(
+                                    phone_number=phone,
+                                    message=message,
+                                    meta_access_token=meta_access_token,
+                                    meta_phone_number_id=meta_phone_number_id
+                                )
+                        else:
+                            logger.info(f"Payment link {plink_id} was already marked as paid.")
+                    else:
+                        logger.warning(f"No payment link record found in DB for link ID {plink_id} or short URL {short_url}")
+                        
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error in Razorpay webhook: {e}", exc_info=True)
+        return Response(status_code=500, content="Internal Server Error")
 
 
 # =============================================================================
