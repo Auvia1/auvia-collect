@@ -108,7 +108,10 @@ async def send_payment_link_tool(params: FunctionCallParams, amount: float, phon
     try:
         async with pool.acquire() as conn:
             call_row = await conn.fetchrow(
-                "SELECT id, contact_id, campaign_id, clinic_id, payment_context FROM calls WHERE id::text = $1 OR telephony_call_id = $1",
+                """SELECT cl.id, cl.contact_id, cl.campaign_id, cl.clinic_id, co.payment_context 
+                   FROM calls cl
+                   LEFT JOIN contacts co ON cl.contact_id = co.id
+                   WHERE cl.id::text = $1 OR cl.telephony_call_id = $1""",
                 call_id
             )
             if call_row:
