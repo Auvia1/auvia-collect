@@ -32,6 +32,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from pipeline import run_bot
+from tools.whatsapp import verify_whatsapp_webhook, handle_whatsapp_webhook
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
 
@@ -480,6 +481,20 @@ async def vobiz_recording(request: Request):
     except Exception as e:
         logger.error(f"❌ Error processing recording webhook: {e}")
         return {"status": "error"}
+
+
+# =============================================================================
+# 📬 4.5. META WHATSAPP WEBHOOK CALLBACKS
+# =============================================================================
+@app.get("/whatsapp-webhook")
+async def get_whatsapp_webhook(request: Request):
+    """Verify subscription token callback from Meta dashboard."""
+    return await verify_whatsapp_webhook(request)
+
+@app.post("/whatsapp-webhook")
+async def post_whatsapp_webhook(request: Request):
+    """Receive event payload updates from Meta dashboard."""
+    return await handle_whatsapp_webhook(request)
 
 
 # =============================================================================
