@@ -1,4 +1,5 @@
 import httpx
+import datetime
 from loguru import logger
 
 def _format_whatsapp_number(phone_number: str) -> str:
@@ -118,4 +119,76 @@ async def send_payment_link_template(
     except Exception as e:
         logger.error(f"❌ Meta WhatsApp request failed: {e}")
         return False
+
+
+async def send_payment_receipt_template(
+    phone_number: str,
+    hospital_name: str,
+    patient_name: str,
+    amount: str,
+    payment_reason: str,
+    transaction_id: str,
+    meta_access_token: str,
+    meta_phone_number_id: str
+) -> bool:
+    """Sends the approved 'auvia_collect_payment_receipt' Meta WhatsApp Template."""
+    if not meta_access_token or not meta_phone_number_id:
+        logger.error("⚠️ Meta WhatsApp credentials missing for receipt.")
+        return False
+
+    # Format phone number
+    digits_only = "".join(filter(str.isdigit, str(phone_number)))
+    formatted_number = f"91{digits_only}" if len(digits_only) == 10 else digits_only
+
+    # Format current date and time
+    current_time = datetime.datetime.now().strftime("%B %d, %Y at %I:%M %p")
+
+    url = f"https://graph.facebook.com/v22.0/{meta_phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {meta_access_token}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": formatted_number,
+        "type": "template",
+        "template": {
+            "name": "auvia_collect_payment_receipt",
+            "language": {"code": "en"},
+            "components": [
+                {
+                    "type": "header",
+                    "parameters": [{"type": "text", "text": hospital_name}]
+                },
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": patient_name},
+                        {"type": "text", "text": str(amount)},
+                        {"type": "text", "text": payment_reason},
+                        {"type": "text", "text": transaction_id},
+                        {"type": "text", "text": current_time},
+                        {"type": "text", "text": hospital_name}
+                    ]
+                }
+            ]
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code in [200, 201]:
+                logger.info(f"✅ Payment Receipt Template sent successfully to {formatted_number}!")
+                return True
+
+            logger.error(f"❌ Meta Receipt Template Error ({response.status_code}): {response.text}")
+            return False
+
+    except Exception as e:
+        logger.error(f"❌ Meta WhatsApp receipt request failed: {e}")
+        return False
+
 
