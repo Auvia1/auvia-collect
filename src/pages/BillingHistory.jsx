@@ -40,14 +40,16 @@ export default function BillingHistory() {
       totalSpent,
       totalCredits,
       lastPaymentDate,
-      invoiceNumber: successTxs.length > 0 ? `INV-${new Date(successTxs[0].createdAt).getFullYear()}-${successTxs[0].paymentId.substring(6, 12).toUpperCase()}` : ''
+      invoiceNumber: successTxs.length > 0 && successTxs[0].paymentId 
+        ? `INV-${new Date(successTxs[0].createdAt).getFullYear()}-${successTxs[0].paymentId.substring(6, 12).toUpperCase()}` 
+        : ''
     }
   }, [transactions])
 
   const filteredTransactions = useMemo(() => {
     const query = search.trim().toLowerCase()
     return transactions.filter((tx) => {
-      const matchesSearch = !query || tx.paymentId.toLowerCase().includes(query)
+      const matchesSearch = !query || (tx.paymentId && tx.paymentId.toLowerCase().includes(query))
       const matchesStatus = !statusFilter || tx.status === statusFilter
       return matchesSearch && matchesStatus
     })

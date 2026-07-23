@@ -49,7 +49,7 @@ router.get('/billing-history', authMiddleware, async (req, res) => {
     const result = await db.query(
       `SELECT id, credits, amount, gst, total, status, payment_id as "paymentId", created_at as "createdAt"
        FROM credit_transactions
-       WHERE clinic_id = $1
+       WHERE clinic_id = $1 AND payment_id IS NOT NULL
        ORDER BY created_at DESC`,
       [req.clinicId]
     );
