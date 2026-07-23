@@ -1005,12 +1005,13 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                     )
                     
                     if new_balance is not None:
-                        # Calculate what the balance was before this deduction
-                        balance_before = new_balance + credits_used
+                        # 🚀 THE FIX: Cast the Postgres Decimal to a Python float before doing math!
+                        new_balance_float = float(new_balance)
+                        balance_before = new_balance_float + credits_used
                         
                         await conn.execute(
                             "INSERT INTO credit_transactions (clinic_id, type, amount, balance_before, balance_after, reference_id, description) VALUES ($1, 'deduction', $2, $3, $4, $5, $6)",
-                            db_clinic_uuid, credits_used, balance_before, new_balance, db_call_uuid, f"Voice AI Call deduction ({tracker.duration()} seconds)"
+                            db_clinic_uuid, credits_used, balance_before, new_balance_float, db_call_uuid, f"Voice AI Call deduction ({tracker.duration()} seconds)"
                         )
 
                 # 3. Log Call Cost Breakdown for analytics reporting
