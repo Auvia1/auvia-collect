@@ -959,9 +959,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
 
     try:
         async with db_pool.acquire() as conn:
-            # 🚀 THE FIX: This UPSERT safely merges the AI summary and transcript.
-            # COALESCE(calls.recording_url, EXCLUDED.recording_url) ensures that if the 
-            # Node.js webhook already saved the MP3 URL, Python will not overwrite it with null!
+            # 🚀 THE FIX: Explicitly cast $6::int and $12::numeric so asyncpg doesn't crash!
             await conn.execute("""
                 INSERT INTO calls (
                     id, contact_id, campaign_id, clinic_id, attempt_number, 
@@ -970,9 +968,9 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                     started_at, ended_at, updated_at, amount, billing
                 ) VALUES (
                     $1, $2, $3, $4, 1, 
-                    'completed', $5, $6, $7, 
+                    'completed', $5, $6::int, $7, 
                     $8::jsonb, $9, $10, $11, 
-                    NOW() - INTERVAL '1 second' * $6, NOW(), NOW(), $12, $13::jsonb
+                    NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     call_status = 'completed',
