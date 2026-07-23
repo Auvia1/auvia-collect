@@ -661,7 +661,7 @@ const handleAnswerCall = async (req, res) => {
         redirect="false" 
         maxLength="7200"
         fileFormat="mp3" 
-        callbackUrl="${PUBLIC_DOMAIN}/api/voice/vobiz-recording?callId=${callId}"
+        callbackUrl="${PUBLIC_DOMAIN}/vobiz-recording?callId=${callId}"
         callbackMethod="POST"
     />
     <!-- 🚀 CRITICAL FIX: Explicitly enforce the wss:// protocol and path parameter -->

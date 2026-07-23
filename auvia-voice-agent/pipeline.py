@@ -959,41 +959,93 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
 
     try:
         async with db_pool.acquire() as conn:
-            # 🚀 THE FIX: Explicitly cast $6::int and $12::numeric so asyncpg doesn't crash!
-            await conn.execute("""
-                INSERT INTO calls (
-                    id, contact_id, campaign_id, clinic_id, attempt_number, 
-                    call_status, outcome, duration_seconds, recording_url, 
-                    transcript, ai_summary, sentiment, telephony_call_id, 
-                    started_at, ended_at, updated_at, amount, billing
-                ) VALUES (
-                    $1, $2, $3, $4, 1, 
-                    'completed', $5, $6::int, $7, 
-                    $8::jsonb, $9, $10, $11, 
-                    NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    call_status = 'completed',
-                    outcome = EXCLUDED.outcome,
-                    duration_seconds = EXCLUDED.duration_seconds,
-                    recording_url = COALESCE(calls.recording_url, EXCLUDED.recording_url), 
-                    transcript = EXCLUDED.transcript,
-                    ai_summary = EXCLUDED.ai_summary,
-                    sentiment = EXCLUDED.sentiment,
-                    telephony_call_id = COALESCE(calls.telephony_call_id, EXCLUDED.telephony_call_id),
-                    ended_at = EXCLUDED.ended_at,
-                    updated_at = EXCLUDED.updated_at,
-                    amount = COALESCE(EXCLUDED.amount, calls.amount),
-                    billing = EXCLUDED.billing;
-            """,
-            db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
-            lead_data.get("outcome", "other"), tracker.duration(), recording_url,
-            json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
-            amount_val, json.dumps(breakdown) if breakdown else '{}')
+            async with conn.transaction():
+                # 1. Upsert the Call Record
+                # 🚀 THE FIX: Explicitly cast $6::int and $12::numeric so asyncpg doesn't crash!
+                await conn.execute("""
+                    INSERT INTO calls (
+                        id, contact_id, campaign_id, clinic_id, attempt_number, 
+                        call_status, outcome, duration_seconds, recording_url, 
+                        transcript, ai_summary, sentiment, telephony_call_id, 
+                        started_at, ended_at, updated_at, amount, billing
+                    ) VALUES (
+                        $1, $2, $3, $4, 1, 
+                        'completed', $5, $6::int, $7, 
+                        $8::jsonb, $9, $10, $11, 
+                        NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        call_status = 'completed',
+                        outcome = EXCLUDED.outcome,
+                        duration_seconds = EXCLUDED.duration_seconds,
+                        recording_url = COALESCE(calls.recording_url, EXCLUDED.recording_url), 
+                        transcript = EXCLUDED.transcript,
+                        ai_summary = EXCLUDED.ai_summary,
+                        sentiment = EXCLUDED.sentiment,
+                        telephony_call_id = COALESCE(calls.telephony_call_id, EXCLUDED.telephony_call_id),
+                        ended_at = EXCLUDED.ended_at,
+                        updated_at = EXCLUDED.updated_at,
+                        amount = COALESCE(EXCLUDED.amount, calls.amount),
+                        billing = EXCLUDED.billing;
+                """,
+                db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
+                lead_data.get("outcome", "other"), tracker.duration(), recording_url,
+                json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
+                amount_val, json.dumps(breakdown) if breakdown else '{}')
+
+                # 2. Safely deduct the fractional credits from the clinic's wallet
+                if breakdown and "billed_minutes" in breakdown:
+                    credits_used = float(breakdown["billed_minutes"])
+                    await conn.execute(
+                        "UPDATE clinics SET credits = COALESCE(credits, 0) - $1::numeric, updated_at = NOW() WHERE id = $2",
+                        credits_used, db_clinic_uuid
+                    )
+
+                # 3. Log Call Cost Breakdown for analytics reporting
+                if breakdown:
+                    try:
+                        dur_sec = float(breakdown.get("duration_seconds") or tracker.duration() or 0)
+                        dur_min = float(breakdown.get("duration_minutes") or (dur_sec / 60.0) or 0)
+                        stt_cost = float(breakdown.get("stt_cost") or 0)
+                        stt_prov = str(breakdown.get("stt_provider") or "Sarvam")
+                        tts_cost = float(breakdown.get("tts_cost") or 0)
+                        tts_prov = str(breakdown.get("tts_provider") or "Sarvam AI")
+                        tts_chars = int(breakdown.get("tts_chars") or 0)
+                        llm_in_cost = float(breakdown.get("llm_in_cost") or 0)
+                        llm_in_tok = int(breakdown.get("llm_in_tokens") or 0)
+                        llm_out_cost = float(breakdown.get("llm_out_cost") or 0)
+                        llm_out_tok = int(breakdown.get("llm_out_tokens") or 0)
+                        telephony_cost = float(breakdown.get("telephony_cost") or 0)
+                        telephony_prov = str(breakdown.get("telephony_provider") or "Vobiz")
+                        whatsapp_cost = float(breakdown.get("whatsapp_cost") or 0)
+                        whatsapp_msg_type = str(breakdown.get("whatsapp_msg_type") or "None")
+                        other_cost = float(breakdown.get("other_cost") or 0)
+                        credits_billed = float(breakdown.get("billed_minutes") or 0)
+                        total_cost = float(breakdown.get("total_cost") or 0)
+                        cost_per_minute = float(breakdown.get("cost_per_minute") or 0)
+
+                        await conn.execute("""
+                            INSERT INTO call_cost_breakdown (
+                                call_id, clinic_id, duration_seconds, duration_minutes,
+                                stt_cost, stt_provider, tts_cost, tts_provider, tts_chars,
+                                llm_in_cost, llm_in_tokens, llm_out_cost, llm_out_tokens,
+                                telephony_cost, telephony_provider, whatsapp_cost, whatsapp_msg_type,
+                                other_cost, credits_billed, total_cost, cost_per_minute, bill
+                            ) VALUES (
+                                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb
+                            )
+                        """,
+                        db_call_uuid, db_clinic_uuid, dur_sec, dur_min,
+                        stt_cost, stt_prov, tts_cost, tts_prov, tts_chars,
+                        llm_in_cost, llm_in_tok, llm_out_cost, llm_out_tok,
+                        telephony_cost, telephony_prov, whatsapp_cost, whatsapp_msg_type,
+                        other_cost, credits_billed, total_cost, cost_per_minute, json.dumps(breakdown))
+                    except Exception as cbe:
+                        logger.error(f"❌ Failed to save cost breakdown directly to DB: {cbe}")
             
-        logger.info(f"✅ Lead successfully saved directly to DB. Call ID: {call_id}")
+        logger.info(f"✅ Lead and Billing successfully saved directly to DB. Call ID: {call_id}")
     except Exception as e:
-        logger.error(f"❌ Failed to save lead directly to DB: {e}")
+        logger.error(f"❌ Failed to save lead/billing directly to DB: {e}")
 
 # =============================================================================
 # 🛡️ DEFENSIVE PROCESSORS
