@@ -117,7 +117,7 @@ export default function CustomerDetail() {
     report += `Patient Name: ${customer.name}\n`;
     report += `Phone: ${customer.phone}\n`;
     report += `Status: ${customer.paymentStatus}\n`;
-    report += `Pending Amount: ₹${customer.amount.toFixed(2)}\n`;
+    report += `Pending Amount: ₹${(customer.paymentStatus === 'Paid' ? 0 : customer.amount).toFixed(2)}\n`;
     report += `Call Duration: ${customer.duration}\n`;
     report += `Call Status: ${customer.callStatus}\n`;
     report += `AI Summary: ${customer.summary || 'N/A'}\n`;
@@ -203,7 +203,9 @@ export default function CustomerDetail() {
                 <span className="block text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider mb-1">
                   Pending Amount
                 </span>
-                <span className="text-headline-lg font-display text-on-surface">₹{customer.amount.toFixed(2)}</span>
+                <span className="text-headline-lg font-display text-on-surface">
+                  ₹{(customer.paymentStatus === 'Paid' ? 0 : customer.amount).toFixed(2)}
+                </span>
               </div>
               <div className="border-t border-outline-variant/30 pt-4">
                 <span className="block text-label-sm font-label-sm text-on-surface-variant uppercase tracking-wider mb-1">
