@@ -43,7 +43,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const result = await db.query(
       `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
               c.campaign_id, camp.name as campaign_name, c.call_status, c.duration_seconds,
-              c.ai_summary, c.recording_url, c.amount, c.vobiz_call_sid, pl.status as payment_link_status
+              c.ai_summary, c.recording_url, c.amount, c.vobiz_call_sid, c.credits_billed, pl.status as payment_link_status
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
        JOIN campaigns camp ON camp.id = c.campaign_id
@@ -58,7 +58,7 @@ router.get('/', authMiddleware, async (req, res) => {
       name: row.customer_name,
       phone: row.customer_phone,
       amount: parseFloat(row.amount_due),
-      callAmount: row.amount ? parseFloat(row.amount) : null,
+      callAmount: row.credits_billed ? parseFloat(row.credits_billed) : 0,
       campaignId: row.campaign_id,
       campaignName: row.campaign_name,
       callStatus: getCallStatusLabel(row.call_status),
@@ -84,7 +84,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
               camp.name as campaign_name, c.call_status, c.duration_seconds, c.outcome,
               c.ai_summary, c.recording_url, c.transcript, c.sentiment,
-              c.amount, c.vobiz_call_sid, c.telephony_call_id,
+              c.amount, c.vobiz_call_sid, c.telephony_call_id, c.credits_billed,
               pl.status as payment_link_status, pl.short_url as payment_short_url,
               cont.notes as customer_notes
        FROM calls c
@@ -112,7 +112,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       name: row.customer_name,
       phone: row.customer_phone,
       amount: parseFloat(row.amount_due),
-      callAmount: row.amount ? parseFloat(row.amount) : null,
+      callAmount: row.credits_billed ? parseFloat(row.credits_billed) : 0,
       campaignName: row.campaign_name,
       callStatus: getCallStatusLabel(row.call_status),
       paymentStatus: getPaymentStatusLabel(row.payment_link_status),
