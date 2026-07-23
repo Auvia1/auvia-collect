@@ -234,6 +234,30 @@ export default function CustomerDetail() {
               </li>
             </ul>
           </div>
+
+          {customer.payment && (
+            <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-md border border-surface-variant">
+              <h3 className="text-body-lg font-body-lg font-semibold text-on-surface mb-4">Transaction Details</h3>
+              <div className="space-y-3 text-body-sm font-body-sm text-on-surface">
+                <div className="flex justify-between border-b border-outline-variant/10 pb-2">
+                  <span className="text-on-surface-variant">Payment ID</span>
+                  <span className="font-mono text-xs text-on-surface">{customer.payment.id}</span>
+                </div>
+                <div className="flex justify-between border-b border-outline-variant/10 pb-2">
+                  <span className="text-on-surface-variant">Amount Paid</span>
+                  <span className="font-bold text-primary">₹{customer.payment.amount.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between border-b border-outline-variant/10 pb-2">
+                  <span className="text-on-surface-variant">Method</span>
+                  <span className="text-on-surface">{customer.payment.method}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-on-surface-variant">Paid At</span>
+                  <span className="text-on-surface">{customer.payment.date}</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right column */}

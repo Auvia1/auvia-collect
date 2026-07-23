@@ -460,11 +460,17 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
 
     const campaign = campaignRes.rows[0];
 
-    // 1. Total billed = sum of amount_due for selected contacts in this campaign
+    // 1. Total billed = sum of c.amount or amount_due for selected contacts in this campaign
     const billedRes = await db.query(
-      `SELECT COALESCE(SUM(amount_due), 0) AS total_billed
-       FROM contacts
-       WHERE campaign_id = $1 AND is_selected = true`,
+      `SELECT COALESCE(SUM(COALESCE(c.amount, cont.amount_due)), 0) AS total_billed
+       FROM contacts cont
+       LEFT JOIN (
+         SELECT contact_id, MAX(amount) as amount 
+         FROM calls 
+         WHERE campaign_id = $1 
+         GROUP BY contact_id
+       ) c ON c.contact_id = cont.id
+       WHERE cont.campaign_id = $1 AND cont.is_selected = true`,
       [req.params.id]
     );
     const totalBilled = parseFloat(billedRes.rows[0].total_billed);
@@ -575,7 +581,7 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
       id: row.id,
       name: row.customer_name,
       phone: row.customer_phone,
-      amount: parseFloat(row.amount_due),
+      amount: row.amount ? parseFloat(row.amount) : parseFloat(row.amount_due),
       callAmount: row.credits_billed ? parseFloat(row.credits_billed) : 0,
       campaignId: row.campaign_id,
       campaignName: row.campaign_name,

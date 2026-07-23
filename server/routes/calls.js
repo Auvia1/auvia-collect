@@ -57,7 +57,7 @@ router.get('/', authMiddleware, async (req, res) => {
       id: row.id,
       name: row.customer_name,
       phone: row.customer_phone,
-      amount: parseFloat(row.amount_due),
+      amount: row.amount ? parseFloat(row.amount) : parseFloat(row.amount_due),
       callAmount: row.credits_billed ? parseFloat(row.credits_billed) : 0,
       campaignId: row.campaign_id,
       campaignName: row.campaign_name,
@@ -86,11 +86,16 @@ router.get('/:id', authMiddleware, async (req, res) => {
               c.ai_summary, c.recording_url, c.transcript, c.sentiment,
               c.amount, c.vobiz_call_sid, c.telephony_call_id, c.credits_billed,
               pl.status as payment_link_status, pl.short_url as payment_short_url,
-              cont.notes as customer_notes
+              cont.notes as customer_notes,
+              p.razorpay_payment_id as "paymentId",
+              p.amount_paid as "paymentAmount",
+              p.method as "paymentMethod",
+              p.paid_at as "paymentDate"
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
        JOIN campaigns camp ON camp.id = c.campaign_id
        LEFT JOIN payment_links pl ON pl.call_id = c.id
+       LEFT JOIN payments p ON p.payment_link_id = pl.id
        WHERE c.id = $1 AND c.clinic_id = $2 LIMIT 1`,
       [req.params.id, req.clinicId]
     );
@@ -111,7 +116,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       id: row.id,
       name: row.customer_name,
       phone: row.customer_phone,
-      amount: parseFloat(row.amount_due),
+      amount: row.amount ? parseFloat(row.amount) : parseFloat(row.amount_due),
       callAmount: row.credits_billed ? parseFloat(row.credits_billed) : 0,
       campaignName: row.campaign_name,
       callStatus: getCallStatusLabel(row.call_status),
@@ -123,6 +128,12 @@ router.get('/:id', authMiddleware, async (req, res) => {
       transcript: parsedTranscript,
       sentiment: row.sentiment || 'neutral',
       paymentUrl: row.payment_short_url || '',
+      payment: row.paymentId ? {
+        id: row.paymentId,
+        amount: parseFloat(row.paymentAmount),
+        method: row.paymentMethod || 'UPI / Cards',
+        date: row.paymentDate ? new Date(row.paymentDate).toLocaleString('en-IN') : null
+      } : null,
       notes: row.customer_notes || '',
       outcome: row.outcome,
       vobizCallSid: row.vobiz_call_sid || null,
