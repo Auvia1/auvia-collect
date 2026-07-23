@@ -925,6 +925,34 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
     clinic_id = session.get("clinicId")
     if not campaign_id or not clinic_id: return
 
+    # Check Redis for a pending recording callback url
+    redis_url = os.getenv("REDIS_URL") or os.getenv("REDIS_URI") or "redis://localhost:6379"
+    telephony_call_id = session.get("telephonyCallId")
+    db_call_id = session.get("callId")
+
+    if not recording_url:
+        try:
+            import redis.asyncio as redis
+            r_client = redis.from_url(redis_url, decode_responses=True)
+            
+            # Check telephonyCallId first
+            if telephony_call_id:
+                recording_url = await r_client.get(f"pending_recording:{telephony_call_id}")
+                if recording_url:
+                    await r_client.delete(f"pending_recording:{telephony_call_id}")
+                    logger.info(f"✅ Retrieved cached recording URL from Redis for telephony ID: {telephony_call_id}")
+
+            # Fallback to db_call_id
+            if not recording_url and db_call_id:
+                recording_url = await r_client.get(f"pending_recording:{db_call_id}")
+                if recording_url:
+                    await r_client.delete(f"pending_recording:{db_call_id}")
+                    logger.info(f"✅ Retrieved cached recording URL from Redis for DB ID: {db_call_id}")
+            
+            await r_client.close()
+        except Exception as rex:
+            logger.error(f"🚨 Redis error reading recording URL: {rex}")
+
     payload = {
         "campaignId": campaign_id,
         "clinicId": clinic_id,

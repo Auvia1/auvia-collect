@@ -296,7 +296,7 @@ async def vobiz_answer(request: Request):
         call_sid = "unknown"
 
     ws_url = f"wss://{host_only}/ws/{call_sid}"
-    record_webhook = f"{public_url}/vobiz-recording?callId={db_call_id}"
+    record_webhook = f"{public_url}/vobiz-recording-action?callId={db_call_id}"
 
     vobiz_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -414,9 +414,12 @@ async def vobiz_hangup(request: Request):
 # =============================================================================
 # 🎙️ 4. VOBIZ RECORDING WEBHOOK (Attaches MP3 to Database)
 # =============================================================================
+@app.post("/vobiz-recording-action")
+@app.post("/vobiz-recording-action/")
 @app.post("/vobiz-recording")
-async def vobiz_recording(request: Request):
-    """Catches call recording URL from Vobiz and links it directly to PostgreSQL."""
+@app.post("/vobiz-recording/")
+async def handle_recording_callback(request: Request):
+    """Catches call recording URL from Vobiz, caches it in Redis, and links it directly to PostgreSQL."""
     db_call_id = request.query_params.get("callId")
     try:
         data = {}
@@ -443,42 +446,62 @@ async def vobiz_recording(request: Request):
             data.get("RecordUrl")
         )
 
-        if not record_url:
+        if not call_uuid and db_call_id:
+            call_uuid = db_call_id
+
+        if not call_uuid or not record_url:
+            logger.warning(f"⚠️ Recording webhook called but missing valid CallUUID or RecordingURL. Payload: {data}")
             return {"status": "ignored"}
 
-        logger.info(f"🎙️ Recording received for Call UUID {call_uuid} / db_call_id {db_call_id} -> {record_url}")
+        logger.info(f"🎙️ Recording received for Vobiz Call ID {call_uuid} / db_call_id {db_call_id} -> {record_url}. Caching in Redis for later DB write.")
 
-        if _db_pool:
-            async with _db_pool.acquire() as conn:
-                updated_id = None
+        # 1. Cache in Redis
+        try:
+            if _redis_client:
+                await _redis_client.set(f"pending_recording:{call_uuid}", record_url, ex=3600)
                 if db_call_id:
-                    updated_id = await conn.fetchval(
-                        """UPDATE calls 
-                           SET recording_url = $1, 
-                               vobiz_call_sid = $2, 
-                               call_status = CASE WHEN call_status = 'in_progress' THEN 'completed' ELSE call_status END,
-                               ended_at = COALESCE(ended_at, NOW()),
-                               updated_at = NOW() 
-                           WHERE id = $3 
-                           RETURNING id""",
-                        record_url, call_uuid, uuid.UUID(db_call_id)
-                    )
-                else:
-                    updated_id = await conn.fetchval(
-                        """UPDATE calls 
-                           SET recording_url = $1, 
-                               vobiz_call_sid = $2, 
-                               call_status = CASE WHEN call_status = 'in_progress' THEN 'completed' ELSE call_status END,
-                               ended_at = COALESCE(ended_at, NOW()),
-                               updated_at = NOW() 
-                           WHERE telephony_call_id = $3 
-                           RETURNING id""",
-                        record_url, call_uuid, call_uuid
-                    )
-                if updated_id:
-                    logger.info(f"✅ Successfully attached recording URL to Postgres call ID: {updated_id}")
-                else:
-                    logger.warning(f"⚠️ Recording webhook received, but no matching call row found for Vobiz SID: {call_uuid}")
+                    await _redis_client.set(f"pending_recording:{db_call_id}", record_url, ex=3600)
+                logger.info(f"✅ Cached recording URL in Redis for call {call_uuid}")
+        except Exception as re:
+            logger.error(f"🚨 Failed to cache recording URL in Redis: {re}")
+
+        # 2. Attempt immediate DB Update (if the row already exists)
+        try:
+            if _db_pool:
+                async with _db_pool.acquire() as conn:
+                    updated_id = None
+                    if db_call_id:
+                        try:
+                            db_call_uuid = uuid.UUID(db_call_id)
+                            updated_id = await conn.fetchval(
+                                """UPDATE calls 
+                                   SET recording_url = $1, 
+                                       vobiz_call_sid = COALESCE(vobiz_call_sid, $2),
+                                       updated_at = NOW() 
+                                   WHERE id = $3 
+                                   RETURNING id""",
+                                record_url, call_uuid, db_call_uuid
+                            )
+                        except Exception:
+                            pass
+
+                    if not updated_id:
+                        updated_id = await conn.fetchval(
+                            """UPDATE calls 
+                               SET recording_url = $1, 
+                                   vobiz_call_sid = COALESCE(vobiz_call_sid, $2),
+                                   updated_at = NOW() 
+                               WHERE telephony_call_id = $3 OR vobiz_call_sid = $3
+                               RETURNING id""",
+                            record_url, call_uuid, call_uuid
+                        )
+                    
+                    if updated_id:
+                        logger.info(f"✅ Successfully updated recording URL directly in DB for entry: {updated_id}")
+                    else:
+                        logger.warning(f"⚠️ Recording webhook received, but no matching call row found for Vobiz SID: {call_uuid}")
+        except Exception as de:
+            logger.error(f"🚨 Direct DB update attempt failed: {de}")
 
         return {"status": "success"}
     except Exception as e:
