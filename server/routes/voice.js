@@ -652,14 +652,18 @@ const handleAnswerCall = async (req, res) => {
 
   // Ensure this matches the exact domain you set up in Coolify!
   const PYTHON_DOMAIN = 'collectagent.nexovai.in'; 
+  const NODE_BACKEND_URL = process.env.PUBLIC_URL || 'https://api.nexovai.in';
 
   const vobizXml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+    <!-- 🚀 CRITICAL FIX: Add callbackUrl so Vobiz knows where to POST the MP3 -->
     <Record 
         recordSession="true" 
         redirect="false" 
         maxLength="7200"
         fileFormat="mp3" 
+        callbackUrl="${NODE_BACKEND_URL}/api/voice/vobiz-recording?callId=${callId}"
+        callbackMethod="POST"
     />
     <!-- 🚀 CRITICAL FIX: Explicitly enforce the wss:// protocol and path parameter -->
     <Stream 
