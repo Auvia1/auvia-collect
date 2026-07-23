@@ -920,67 +920,82 @@ Extract fields. Respond ONLY with valid JSON.
         logger.warning(f"Lead extraction failed: {e}")
         return {"outcome": "other", "sentiment": "neutral", "aiSummary": "Extraction failed.", "notes": tracker.full_text()[:500]}
 
-async def post_lead_to_server(session: dict, lead_data: dict, tracker: ConversationTracker, recording_url: str | None = None, breakdown: dict | None = None):
+async def post_lead_to_server(session: dict, lead_data: dict, tracker: ConversationTracker, db_pool, recording_url: str | None = None, breakdown: dict | None = None):
     campaign_id = session.get("campaignId")
     clinic_id = session.get("clinicId")
-    if not campaign_id or not clinic_id: return
-
-    # Check Redis for a pending recording callback url
-    redis_url = os.getenv("REDIS_URL") or os.getenv("REDIS_URI") or "redis://localhost:6379"
+    contact_id = session.get("contactId")
+    call_id = session.get("callId")
     telephony_call_id = session.get("telephonyCallId")
-    db_call_id = session.get("callId")
+    
+    if not call_id or not db_pool:
+        logger.error("❌ Missing call_id or db_pool for direct DB save.")
+        return
 
+    # Try to pull from Redis just in case it caught a stray webhook
     if not recording_url:
         try:
             import redis.asyncio as redis
+            redis_url = os.getenv("REDIS_URL") or "redis://localhost:6379"
             r_client = redis.from_url(redis_url, decode_responses=True)
-            
-            # Check telephonyCallId first
             if telephony_call_id:
                 recording_url = await r_client.get(f"pending_recording:{telephony_call_id}")
-                if recording_url:
-                    await r_client.delete(f"pending_recording:{telephony_call_id}")
-                    logger.info(f"✅ Retrieved cached recording URL from Redis for telephony ID: {telephony_call_id}")
-
-            # Fallback to db_call_id
-            if not recording_url and db_call_id:
-                recording_url = await r_client.get(f"pending_recording:{db_call_id}")
-                if recording_url:
-                    await r_client.delete(f"pending_recording:{db_call_id}")
-                    logger.info(f"✅ Retrieved cached recording URL from Redis for DB ID: {db_call_id}")
-            
+            if not recording_url and call_id:
+                recording_url = await r_client.get(f"pending_recording:{call_id}")
             await r_client.close()
-        except Exception as rex:
-            logger.error(f"🚨 Redis error reading recording URL: {rex}")
+        except Exception:
+            pass
 
-    payload = {
-        "campaignId": campaign_id,
-        "clinicId": clinic_id,
-        "existingContactId": session.get("contactId") or None,
-        "callId": session.get("callId") or None,
-        "durationSeconds": tracker.duration(),
-        "transcript": tracker.turns,
-        "recordingUrl": recording_url,
-        "billing": breakdown,
-        **lead_data,
-    }
-    if not BOT_SECRET:
-        logger.error("AUVIA_BOT_SECRET is not set; refusing to post lead payload")
-        return
+    # Ensure UUID types for Postgres compatibility
+    db_call_uuid = uuid.UUID(call_id) if isinstance(call_id, str) else call_id
+    db_contact_uuid = uuid.UUID(contact_id) if isinstance(contact_id, str) else contact_id
+    db_campaign_uuid = uuid.UUID(campaign_id) if isinstance(campaign_id, str) else campaign_id
+    db_clinic_uuid = uuid.UUID(clinic_id) if isinstance(clinic_id, str) else clinic_id
+
+    # Parse amount safely
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                LEAD_ENDPOINT,
-                json=payload,
-                headers={
-                    "x-bot-secret": BOT_SECRET,
-                    "Content-Type": "application/json",
-                },
-            )
-            if resp.status_code == 200: logger.info(f"✅ Lead saved: {resp.json()}")
-            else: logger.error(f"Lead save failed ({resp.status_code}): {resp.text}")
+        amount_val = float(lead_data.get("amountDue")) if lead_data.get("amountDue") else None
+    except:
+        amount_val = None
+
+    try:
+        async with db_pool.acquire() as conn:
+            # 🚀 THE FIX: This UPSERT safely merges the AI summary and transcript.
+            # COALESCE(calls.recording_url, EXCLUDED.recording_url) ensures that if the 
+            # Node.js webhook already saved the MP3 URL, Python will not overwrite it with null!
+            await conn.execute("""
+                INSERT INTO calls (
+                    id, contact_id, campaign_id, clinic_id, attempt_number, 
+                    call_status, outcome, duration_seconds, recording_url, 
+                    transcript, ai_summary, sentiment, telephony_call_id, 
+                    started_at, ended_at, updated_at, amount, billing
+                ) VALUES (
+                    $1, $2, $3, $4, 1, 
+                    'completed', $5, $6, $7, 
+                    $8::jsonb, $9, $10, $11, 
+                    NOW() - INTERVAL '1 second' * $6, NOW(), NOW(), $12, $13::jsonb
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    call_status = 'completed',
+                    outcome = EXCLUDED.outcome,
+                    duration_seconds = EXCLUDED.duration_seconds,
+                    recording_url = COALESCE(calls.recording_url, EXCLUDED.recording_url), 
+                    transcript = EXCLUDED.transcript,
+                    ai_summary = EXCLUDED.ai_summary,
+                    sentiment = EXCLUDED.sentiment,
+                    telephony_call_id = COALESCE(calls.telephony_call_id, EXCLUDED.telephony_call_id),
+                    ended_at = EXCLUDED.ended_at,
+                    updated_at = EXCLUDED.updated_at,
+                    amount = COALESCE(EXCLUDED.amount, calls.amount),
+                    billing = EXCLUDED.billing;
+            """,
+            db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
+            lead_data.get("outcome", "other"), tracker.duration(), recording_url,
+            json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
+            amount_val, json.dumps(breakdown) if breakdown else '{}')
+            
+        logger.info(f"✅ Lead successfully saved directly to DB. Call ID: {call_id}")
     except Exception as e:
-        logger.error(f"Failed to POST lead: {e}")
+        logger.error(f"❌ Failed to save lead directly to DB: {e}")
 
 # =============================================================================
 # 🛡️ DEFENSIVE PROCESSORS
@@ -1366,6 +1381,6 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
         if tracker.turns:
             lead_data = await extract_lead_from_transcript(tracker, llm)
             breakdown = billing_tracker.generate_breakdown()
-            await post_lead_to_server(session, lead_data, tracker, None, breakdown)
+            await post_lead_to_server(session, lead_data, tracker, db_pool, None, breakdown)
         else:
             logger.info("No conversation turns recorded — skipping lead capture")
