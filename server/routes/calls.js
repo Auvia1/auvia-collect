@@ -132,7 +132,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
         id: row.paymentId,
         amount: parseFloat(row.paymentAmount),
         method: row.paymentMethod || 'UPI / Cards',
-        date: row.paymentDate ? new Date(row.paymentDate).toLocaleString('en-IN') : null
+        date: row.paymentDate || null
       } : null,
       notes: row.customer_notes || '',
       outcome: row.outcome,

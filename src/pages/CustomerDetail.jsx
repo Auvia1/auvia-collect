@@ -255,7 +255,9 @@ export default function CustomerDetail() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-on-surface-variant">Paid At</span>
-                  <span className="text-on-surface">{customer.payment.date}</span>
+                  <span className="text-on-surface">
+                    {customer.payment.date ? new Date(customer.payment.date).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : ''}
+                  </span>
                 </div>
               </div>
             </div>
