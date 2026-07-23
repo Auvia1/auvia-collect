@@ -323,12 +323,12 @@ router.get('/:id/summary', authMiddleware, async (req, res) => {
     );
     const concurrent = clinicResult.rows[0]?.max_concurrent_calls || 5;
 
-    // Estimate duration: 3 mins average per call, distributed across concurrent channels
-    const estimatedMinutes = Math.ceil((selectedCount * 3) / concurrent);
+    // Estimate duration: 1 min average per call, distributed across concurrent channels
+    const estimatedMinutes = Math.ceil((selectedCount * 1) / concurrent);
 
     res.json({
       campaignName: campaign.name,
-      totalContacts: parseInt(campaign.total_contacts),
+      totalContacts: selectedCount,
       selectedContacts: selectedCount,
       totalAmountDue: amountDue,
       averageBill: avgBill,

@@ -1224,8 +1224,9 @@ class BillingTracker(FrameProcessor):
         duration_seconds = max(1.0, time.time() - self.timer_start)
         duration_minutes = duration_seconds / 60.0
         
-        # 🚀 FIX: Removed math.ceil() so it accurately bills exact fractions of a minute
-        billed_minutes = round(duration_minutes, 2)
+        # 🚀 THE FIX: Restored telecom ceiling logic. 
+        # 30 sec -> 1 min (1 credit). 1 min 12 sec -> 2 min (2 credits).
+        billed_minutes = int(math.ceil(duration_minutes)) if duration_minutes > 0 else 1
         inr_multiplier = 94.94
         
         telephony_cost = billed_minutes * 0.65
