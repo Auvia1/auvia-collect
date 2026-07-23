@@ -960,19 +960,22 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
     try:
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Upsert the Call Record
+                # Determine credits used safely
+                credits_used = float(breakdown["billed_minutes"]) if breakdown and "billed_minutes" in breakdown else 0.0
+
+                # 1. Upsert the Call Record (Now including credits_billed)
                 # 🚀 THE FIX: Explicitly cast $6::int and $12::numeric so asyncpg doesn't crash!
                 await conn.execute("""
                     INSERT INTO calls (
                         id, contact_id, campaign_id, clinic_id, attempt_number, 
                         call_status, outcome, duration_seconds, recording_url, 
                         transcript, ai_summary, sentiment, telephony_call_id, 
-                        started_at, ended_at, updated_at, amount, billing
+                        started_at, ended_at, updated_at, amount, billing, credits_billed
                     ) VALUES (
                         $1, $2, $3, $4, 1, 
                         'completed', $5, $6::int, $7, 
                         $8::jsonb, $9, $10, $11, 
-                        NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb
+                        NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb, $14::numeric
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         call_status = 'completed',
@@ -986,20 +989,29 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         ended_at = EXCLUDED.ended_at,
                         updated_at = EXCLUDED.updated_at,
                         amount = COALESCE(EXCLUDED.amount, calls.amount),
-                        billing = EXCLUDED.billing;
+                        billing = EXCLUDED.billing,
+                        credits_billed = EXCLUDED.credits_billed;
                 """,
                 db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
                 lead_data.get("outcome", "other"), tracker.duration(), recording_url,
                 json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
-                amount_val, json.dumps(breakdown) if breakdown else '{}')
+                amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used)
 
-                # 2. Safely deduct the fractional credits from the clinic's wallet
-                if breakdown and "billed_minutes" in breakdown:
-                    credits_used = float(breakdown["billed_minutes"])
-                    await conn.execute(
-                        "UPDATE clinics SET credits = COALESCE(credits, 0) - $1::numeric, updated_at = NOW() WHERE id = $2",
+                # 2. Safely deduct the fractional credits from the clinic's wallet (keeping credit_balance and credits columns synchronized)
+                if credits_used > 0:
+                    new_balance = await conn.fetchval(
+                        "UPDATE clinics SET credit_balance = COALESCE(credit_balance, 0) - $1, credits = COALESCE(credits, 0) - $1::int, updated_at = NOW() WHERE id = $2 RETURNING credit_balance",
                         credits_used, db_clinic_uuid
                     )
+                    
+                    if new_balance is not None:
+                        # Calculate what the balance was before this deduction
+                        balance_before = new_balance + credits_used
+                        
+                        await conn.execute(
+                            "INSERT INTO credit_transactions (clinic_id, type, amount, balance_before, balance_after, reference_id, description) VALUES ($1, 'deduction', $2, $3, $4, $5, $6)",
+                            db_clinic_uuid, credits_used, balance_before, new_balance, db_call_uuid, f"Voice AI Call deduction ({tracker.duration()} seconds)"
+                        )
 
                 # 3. Log Call Cost Breakdown for analytics reporting
                 if breakdown:
