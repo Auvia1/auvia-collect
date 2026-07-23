@@ -633,7 +633,7 @@ router.post('/:id/start', authMiddleware, async (req, res) => {
   try {
     // Check campaign details
     const result = await db.query(
-      `SELECT status FROM campaigns WHERE id = $1 AND clinic_id = $2 LIMIT 1`,
+      `SELECT name, status FROM campaigns WHERE id = $1 AND clinic_id = $2 LIMIT 1`,
       [campaignId, req.clinicId]
     );
 
@@ -652,6 +652,13 @@ router.post('/:id/start', authMiddleware, async (req, res) => {
        SET status = 'active', started_at = COALESCE(started_at, now()) 
        WHERE id = $1`,
       [campaignId]
+    );
+
+    // Log the start activity
+    await db.query(
+      `INSERT INTO activity_log (clinic_id, event_type, title, entity_type, entity_id)
+       VALUES ($1, 'campaign_started', $2, 'campaign', $3)`,
+      [req.clinicId, `Campaign "${campaign.name}" started`, campaignId]
     );
 
     // Disable the automatic backend simulation since we are now using the real Pipecat bot!
@@ -707,7 +714,7 @@ router.post('/:id/stop', authMiddleware, async (req, res) => {
   const campaignId = req.params.id;
   try {
     const result = await db.query(
-      `SELECT status FROM campaigns WHERE id = $1 AND clinic_id = $2 LIMIT 1`,
+      `SELECT name, status FROM campaigns WHERE id = $1 AND clinic_id = $2 LIMIT 1`,
       [campaignId, req.clinicId]
     );
 
@@ -725,6 +732,13 @@ router.post('/:id/stop', authMiddleware, async (req, res) => {
        SET status = 'completed', completed_at = now() 
        WHERE id = $1`,
       [campaignId]
+    );
+
+    // Log the complete activity
+    await db.query(
+      `INSERT INTO activity_log (clinic_id, event_type, title, entity_type, entity_id)
+       VALUES ($1, 'campaign_completed', $2, 'campaign', $3)`,
+      [req.clinicId, `Campaign "${campaign.name}" completed`, campaignId]
     );
 
     res.json({ success: true, message: 'Campaign stopped successfully' });

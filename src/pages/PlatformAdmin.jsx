@@ -453,7 +453,7 @@ export default function PlatformAdmin() {
                           </td>
                           <td className="p-4 text-gray-500 font-body-sm max-w-[150px] truncate">{call.campaign_name}</td>
                           <td className="p-4 text-right text-gray-700 font-medium">{formatDuration(call.duration_seconds)}</td>
-                          <td className="p-4 text-right text-[#0f4c81] font-bold">{parseFloat(call.amount || 0).toFixed(2)}</td>
+                          <td className="p-4 text-right text-[#0f4c81] font-bold">{parseFloat(call.credits_billed || 0).toFixed(2)}</td>
                           <td className="p-4 text-right">
                             <Badge variant={call.outcome === 'paid_now' ? 'primary' : 'secondary'}>
                               {call.outcome ? call.outcome.replace('_', ' ') : 'None'}
