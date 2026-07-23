@@ -1009,8 +1009,11 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         new_balance_float = float(new_balance)
                         balance_before = new_balance_float + credits_used
                         
+                        # Populate all NOT NULL constraints (credits, gst, total, status) to prevent insert crashes
                         await conn.execute(
-                            "INSERT INTO credit_transactions (clinic_id, type, amount, balance_before, balance_after, reference_id, description) VALUES ($1, 'deduction', $2, $3, $4, $5, $6)",
+                            """INSERT INTO credit_transactions 
+                               (clinic_id, type, amount, credits, balance_before, balance_after, reference_id, description, gst, total, status) 
+                               VALUES ($1, 'deduction', -$2::numeric, -$2::int, $3, $4, $5, $6, 0.0, -$2::numeric, 'Success')""",
                             db_clinic_uuid, credits_used, balance_before, new_balance_float, db_call_uuid, f"Voice AI Call deduction ({tracker.duration()} seconds)"
                         )
 
