@@ -1171,7 +1171,9 @@ class BillingTracker(FrameProcessor):
     def generate_breakdown(self) -> dict:
         duration_seconds = max(1.0, time.time() - self.timer_start)
         duration_minutes = duration_seconds / 60.0
-        billed_minutes = math.ceil(duration_minutes) if duration_minutes > 0 else 1
+        
+        # 🚀 FIX: Removed math.ceil() so it accurately bills exact fractions of a minute
+        billed_minutes = round(duration_minutes, 2)
         inr_multiplier = 94.94
         
         telephony_cost = billed_minutes * 0.65

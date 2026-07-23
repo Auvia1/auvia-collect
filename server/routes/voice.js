@@ -650,19 +650,18 @@ const handleAnswerCall = async (req, res) => {
     console.error('Error updating call status to in_progress on answer:', err);
   }
 
-  // Ensure this matches the exact domain you set up in Coolify!
-  const PYTHON_DOMAIN = 'collectagent.nexovai.in'; 
-  const NODE_BACKEND_URL = process.env.PUBLIC_URL || 'https://api.nexovai.in';
+  // 🚀 CRITICAL FIX: Hardcode your exact Coolify domain so Vobiz can reach the webhook!
+  const PUBLIC_DOMAIN = 'https://collectagent.nexovai.in'; 
+  const WSS_DOMAIN = 'collectagent.nexovai.in';
 
   const vobizXml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <!-- 🚀 CRITICAL FIX: Add callbackUrl so Vobiz knows where to POST the MP3 -->
     <Record 
         recordSession="true" 
         redirect="false" 
         maxLength="7200"
         fileFormat="mp3" 
-        callbackUrl="${NODE_BACKEND_URL}/api/voice/vobiz-recording?callId=${callId}"
+        callbackUrl="${PUBLIC_DOMAIN}/api/voice/vobiz-recording?callId=${callId}"
         callbackMethod="POST"
     />
     <!-- 🚀 CRITICAL FIX: Explicitly enforce the wss:// protocol and path parameter -->
@@ -670,7 +669,7 @@ const handleAnswerCall = async (req, res) => {
         bidirectional="true" 
         keepCallAlive="true" 
         contentType="audio/x-mulaw;rate=8000"
-    >wss://${PYTHON_DOMAIN}/ws/${callId}</Stream>
+    >wss://${WSS_DOMAIN}/ws/${callId}</Stream>
 </Response>`;
 
   return res.type('text/xml').send(vobizXml);
