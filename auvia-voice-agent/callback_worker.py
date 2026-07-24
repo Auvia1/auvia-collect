@@ -30,8 +30,8 @@ async def process_scheduled_callbacks():
             
             async with pool.acquire() as conn:
                 # 1. Fetch eligible callbacks
-                # This query respects the calling window, checks IST time, ensures retries aren't exhausted,
-                # and uses a NOT EXISTS clause to guarantee a manual call hasn't superseded this one.
+                # 🚀 THE FIX: Explicitly cast ::date and ::time, and enforce strict AT TIME ZONE logic 
+                # to prevent PostgreSQL from choking on UTC offsets.
                 eligible_calls = await conn.fetch("""
                     SELECT 
                         c.id as old_call_id, c.contact_id, c.campaign_id, c.clinic_id, c.attempt_number,
@@ -47,9 +47,9 @@ async def process_scheduled_callbacks():
                         AND c.call_status IN ('completed', 'not_answered', 'failed')
                         AND c.callback_date IS NOT NULL
                         AND c.callback_time IS NOT NULL
-                        AND (c.callback_date + c.callback_time) <= NOW() AT TIME ZONE 'Asia/Kolkata'
+                        AND (c.callback_date::date + c.callback_time::time) <= (NOW() AT TIME ZONE 'Asia/Kolkata')
                         AND c.attempt_number < cl.max_retry_attempts
-                        AND CURRENT_TIME AT TIME ZONE 'Asia/Kolkata' BETWEEN cl.calling_window_start AND cl.calling_window_end
+                        AND (NOW() AT TIME ZONE 'Asia/Kolkata')::time BETWEEN cl.calling_window_start::time AND cl.calling_window_end::time
                         AND cl.is_active = true
                         AND NOT EXISTS (
                             SELECT 1 FROM calls manual_check 
