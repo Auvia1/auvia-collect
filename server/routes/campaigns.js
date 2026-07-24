@@ -602,6 +602,59 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
       vobizCallSid: row.vobiz_call_sid || null,
     }));
 
+    // 7. Selected contacts for this campaign with their payment outcomes and call attempt histories
+    const contactsResult = await db.query(
+      `SELECT cont.id, cont.name, cont.phone, cont.amount_due, cont.payment_context, cont.notes, cont.created_at,
+              latest_call.id as latest_call_id,
+              latest_call.outcome as latest_outcome,
+              latest_call.call_status as latest_call_status,
+              latest_call.attempt_number as latest_attempt_number,
+              latest_call.callback_date,
+              latest_call.callback_time,
+              latest_call.ai_summary as latest_summary,
+              pl.status as payment_link_status
+       FROM contacts cont
+       LEFT JOIN (
+         SELECT DISTINCT ON (contact_id) *
+         FROM calls
+         WHERE campaign_id = $1
+         ORDER BY contact_id, created_at DESC
+       ) latest_call ON latest_call.contact_id = cont.id
+       LEFT JOIN payment_links pl ON pl.call_id = latest_call.id
+       WHERE cont.campaign_id = $1 AND cont.is_selected = true
+       ORDER BY cont.created_at ASC`,
+      [req.params.id]
+    );
+
+    const formattedContacts = contactsResult.rows.map((row) => {
+      const outcome = row.latest_outcome || null;
+      const linkStatus = row.payment_link_status || null;
+      const isPaid = outcome === 'paid_now' || outcome === 'already_paid' || linkStatus === 'paid';
+      const isLinkSent = outcome === 'link_sent' || linkStatus === 'sent' || linkStatus === 'viewed';
+
+      let paymentStatusLabel = 'Unpaid';
+      if (isPaid) paymentStatusLabel = 'Paid';
+      else if (isLinkSent) paymentStatusLabel = 'Payment Link Sent';
+
+      return {
+        id: row.id,
+        name: row.name,
+        phone: row.phone,
+        amount: parseFloat(row.amount_due || 0),
+        paymentContext: row.payment_context,
+        notes: row.notes,
+        isPaid,
+        paymentStatus: paymentStatusLabel,
+        outcome: outcome ? outcome : 'NULL', // 'other', 'NULL', 'paid_now', 'link_sent', 'call_later', 'already_paid', 'not_interested'
+        callStatus: getCallStatusLabel(row.latest_call_status),
+        attemptsCount: row.latest_attempt_number || 0,
+        latestCallId: row.latest_call_id || null,
+        latestSummary: row.latest_summary || 'No calls made yet.',
+        callbackDate: row.callback_date,
+        callbackTime: row.callback_time,
+      };
+    });
+
     res.json({
       campaignName: campaign.name,
       status: campaign.status,
@@ -627,6 +680,7 @@ router.get('/:id/report', authMiddleware, async (req, res) => {
         neutral: (sentiments['neutral'] || 0) + (sentiments['cooperative'] || 0),
         negative: (sentiments['frustrated'] || 0) + (sentiments['uncooperative'] || 0),
       },
+      contacts: formattedContacts,
       calls: formattedCalls
     });
   } catch (err) {
