@@ -77,7 +77,16 @@ async function triggerSingleCall(contact, campaignId, clinicId) {
   // Immediately insert the call record as 'queued'
   const callResult = await db.query(
     `INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
-     VALUES ($1, $2, $3, 1, 'queued', null, 'vobiz-pending', 0)
+     VALUES (
+       $1, 
+       $2, 
+       $3, 
+       (SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM calls WHERE contact_id = $1 AND campaign_id = $2),
+       'queued', 
+       NOW(), 
+       'vobiz-pending', 
+       COALESCE((SELECT amount_due FROM contacts WHERE id = $1), 0)
+     )
      RETURNING id`,
     [contact.id, campaignId, clinicId]
   );
