@@ -883,9 +883,19 @@ class ConversationTracker:
 
 async def extract_lead_from_transcript(tracker: ConversationTracker, llm: GoogleLLMService) -> dict:
     if not tracker.turns: return {}
-    today_str = datetime.date.today().strftime('%A, %B %d, %Y')
+    
+    from zoneinfo import ZoneInfo
+    import datetime
+    
+    # 🚀 FIX 1: Fetch exact IST time so the LLM can calculate "in 20 minutes"
+    ist_now = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+    today_str = ist_now.strftime('%A, %B %d, %Y')
+    time_str = ist_now.strftime('%I:%M %p IST')
+    
     extraction_prompt = f"""You are an AI assistant that extracts structured lead data from voice call transcripts.
-Today's date is {today_str}.
+Today's date is {today_str}. The current time is {time_str}.
+If the user asks for a callback "in X minutes" or "at X time", calculate the exact callbackDate (YYYY-MM-DD) and callbackTime (HH:MM:SS) based on the current time.
+
 TRANSCRIPT:
 {tracker.full_text()}
 
@@ -963,19 +973,25 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 # Determine credits used safely
                 credits_used = float(breakdown["billed_minutes"]) if breakdown and "billed_minutes" in breakdown else 0.0
 
-                # 1. Upsert the Call Record (Now including credits_billed)
-                # 🚀 THE FIX: Explicitly cast $6::int and $12::numeric so asyncpg doesn't crash!
+                # Safely parse date/time to None if empty strings are returned
+                cb_date = lead_data.get("callbackDate") or None
+                cb_time = lead_data.get("callbackTime") or None
+
+                # 1. Upsert the Call Record (Now including credits_billed, callback_date, callback_time)
+                # 🚀 THE FIX: Explicitly cast $6::int, $12::numeric, $15::date and $16::time so asyncpg doesn't crash!
                 await conn.execute("""
                     INSERT INTO calls (
                         id, contact_id, campaign_id, clinic_id, attempt_number, 
                         call_status, outcome, duration_seconds, recording_url, 
                         transcript, ai_summary, sentiment, telephony_call_id, 
-                        started_at, ended_at, updated_at, amount, billing, credits_billed
+                        started_at, ended_at, updated_at, amount, billing, credits_billed,
+                        callback_date, callback_time
                     ) VALUES (
                         $1, $2, $3, $4, 1, 
                         'completed', $5, $6::int, $7, 
                         $8::jsonb, $9, $10, $11, 
-                        NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb, $14::numeric
+                        NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb, $14::numeric,
+                        $15::date, $16::time
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         call_status = 'completed',
@@ -990,12 +1006,14 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         updated_at = EXCLUDED.updated_at,
                         amount = COALESCE(EXCLUDED.amount, calls.amount),
                         billing = EXCLUDED.billing,
-                        credits_billed = EXCLUDED.credits_billed;
+                        credits_billed = EXCLUDED.credits_billed,
+                        callback_date = COALESCE(EXCLUDED.callback_date, calls.callback_date),
+                        callback_time = COALESCE(EXCLUDED.callback_time, calls.callback_time);
                 """,
                 db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
                 lead_data.get("outcome", "other"), tracker.duration(), recording_url,
                 json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
-                amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used)
+                amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used, cb_date, cb_time)
 
                 # 2. Safely deduct the fractional credits from the clinic's wallet (keeping credit_balance and credits columns synchronized)
                 if credits_used > 0:
