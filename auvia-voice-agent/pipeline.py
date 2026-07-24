@@ -973,12 +973,23 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 # Determine credits used safely
                 credits_used = float(breakdown["billed_minutes"]) if breakdown and "billed_minutes" in breakdown else 0.0
 
-                # Safely parse date/time to None if empty strings are returned
-                cb_date = lead_data.get("callbackDate") or None
-                cb_time = lead_data.get("callbackTime") or None
+                # Safely parse date/time strings into Python objects for asyncpg
+                cb_date_str = lead_data.get("callbackDate")
+                cb_time_str = lead_data.get("callbackTime")
 
-                # 1. Upsert the Call Record (Now including credits_billed, callback_date, callback_time)
-                # 🚀 THE FIX: Explicitly cast $6::int, $12::numeric, $15::date and $16::time so asyncpg doesn't crash!
+                parsed_cb_date = None
+                parsed_cb_time = None
+
+                try:
+                    import datetime
+                    if cb_date_str:
+                        parsed_cb_date = datetime.datetime.strptime(cb_date_str, "%Y-%m-%d").date()
+                    if cb_time_str:
+                        parsed_cb_time = datetime.datetime.strptime(cb_time_str, "%H:%M:%S").time()
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to parse callback date/time: {e}")
+
+                # 1. Upsert the Call Record
                 await conn.execute("""
                     INSERT INTO calls (
                         id, contact_id, campaign_id, clinic_id, attempt_number, 
@@ -991,7 +1002,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         'completed', $5, $6::int, $7, 
                         $8::jsonb, $9, $10, $11, 
                         NOW() - INTERVAL '1 second' * $6::int, NOW(), NOW(), $12::numeric, $13::jsonb, $14::numeric,
-                        $15::date, $16::time
+                        $15, $16
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         call_status = 'completed',
@@ -1013,7 +1024,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
                 lead_data.get("outcome", "other"), tracker.duration(), recording_url,
                 json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
-                amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used, cb_date, cb_time)
+                amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used, parsed_cb_date, parsed_cb_time)
 
                 # 2. Safely deduct the fractional credits from the clinic's wallet (keeping credit_balance and credits columns synchronized)
                 if credits_used > 0:

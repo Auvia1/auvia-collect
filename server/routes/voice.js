@@ -764,11 +764,6 @@ router.post('/vobiz-hangup', async (req, res) => {
   }
 
   if (foundCampaignId) {
-    if (runningBots.has(foundCampaignId)) {
-      console.log(`[VobizHangup] Cleaning up session for campaign ${foundCampaignId}`);
-      runningBots.delete(foundCampaignId);
-      // Note: Python voice agent manages its own lifecycle per call
-    }
     checkAndCompleteCampaign(foundCampaignId).catch(err => {
       console.error('[CampaignCompletion] Error in async check:', err);
     });
