@@ -19,7 +19,7 @@ async def process_scheduled_callbacks():
         try:
             pool = get_pool()
             if not pool:
-                await asyncio.sleep(60)
+                await asyncio.sleep(2)
                 continue
 
             current_time_ist = datetime.now(IST)

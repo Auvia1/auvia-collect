@@ -17,8 +17,13 @@ async function checkAndCompleteCampaign(campaignId) {
   try {
     const activeCalls = await db.query(
       `SELECT COUNT(*)::int as count 
-       FROM calls 
-       WHERE campaign_id = $1 AND call_status IN ('queued', 'in_progress')`,
+       FROM calls c
+       JOIN clinics cl ON c.clinic_id = cl.id
+       WHERE c.campaign_id = $1 
+       AND (
+         c.call_status IN ('queued', 'in_progress') 
+         OR (c.outcome = 'call_later' AND c.attempt_number < cl.max_retry_attempts)
+       )`,
       [campaignId]
     );
 
