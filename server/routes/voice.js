@@ -835,4 +835,16 @@ router.post('/vobiz-recording', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── 8. POST /api/voice/campaign-check-completion — Triggered by Python AI post_lead_to_server ───
+router.post('/campaign-check-completion', async (req, res) => {
+  const { campaignId } = req.body || {};
+  if (campaignId) {
+    console.log(`[CampaignCheckCompletion] Received completion check trigger for campaign ${campaignId}`);
+    checkAndCompleteCampaign(campaignId).catch(err => {
+      console.error('[CampaignCheckCompletion] Error in completion check:', err);
+    });
+  }
+  res.json({ success: true });
+});
+
 export default router;

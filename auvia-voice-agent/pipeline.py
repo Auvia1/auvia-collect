@@ -1100,8 +1100,59 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         other_cost, credits_billed, total_cost, cost_per_minute, json.dumps(breakdown))
                     except Exception as cbe:
                         logger.error(f"❌ Failed to save cost breakdown directly to DB: {cbe}")
+
+                # 4. 🚀 THE FIX: Check if all calls in campaign are done (link_sent or max retries) & update campaign status
+                if db_campaign_uuid:
+                    try:
+                        active_count = await conn.fetchval("""
+                            SELECT COUNT(*)::int
+                            FROM (
+                              SELECT DISTINCT ON (c.contact_id) 
+                                c.call_status, c.outcome, c.attempt_number, cl.max_retry_attempts
+                              FROM calls c
+                              JOIN clinics cl ON c.clinic_id = cl.id
+                              WHERE c.campaign_id = $1
+                              ORDER BY c.contact_id, c.created_at DESC
+                            ) as latest_calls
+                            WHERE latest_calls.call_status IN ('queued', 'in_progress') 
+                               OR (latest_calls.outcome = 'call_later' AND latest_calls.attempt_number < latest_calls.max_retry_attempts)
+                        """, db_campaign_uuid)
+
+                        if active_count == 0:
+                            await conn.execute("""
+                                UPDATE campaigns 
+                                SET status = 'completed', updated_at = NOW() 
+                                WHERE id = $1 AND status = 'active'
+                            """, db_campaign_uuid)
+                            logger.info(f"🎉 Campaign {db_campaign_uuid} has no remaining pending calls. Marked as completed!")
+                    except Exception as cce:
+                        logger.error(f"⚠️ Error checking campaign completion in Python DB query: {cce}")
             
         logger.info(f"✅ Lead and Billing successfully saved directly to DB. Call ID: {call_id}")
+
+        # 5. Notify Node.js backend to refresh campaign state & trigger completion handlers
+        if campaign_id:
+            try:
+                import httpx
+                backend_urls = [
+                    os.getenv("NODE_BACKEND_URL"),
+                    os.getenv("PUBLIC_API_URL"),
+                    "http://localhost:5001"
+                ]
+                for base in backend_urls:
+                    if not base: continue
+                    url = f"{base.rstrip('/')}/api/voice/campaign-check-completion"
+                    try:
+                        async with httpx.AsyncClient(timeout=4.0) as client:
+                            res = await client.post(url, json={"campaignId": str(campaign_id)})
+                            if res.status_code == 200:
+                                logger.info(f"📡 Notified Node.js backend of lead completion for campaign {campaign_id}")
+                                break
+                    except Exception:
+                        pass
+            except Exception as ne:
+                logger.warning(f"⚠️ Failed to notify Node backend of campaign check: {ne}")
+
     except Exception as e:
         logger.error(f"❌ Failed to save lead/billing directly to DB: {e}")
 
