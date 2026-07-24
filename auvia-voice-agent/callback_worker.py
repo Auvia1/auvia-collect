@@ -72,13 +72,7 @@ async def process_scheduled_callbacks():
                             logger.info(f"⏳ Skipping callback for clinic {clinic_id}: Max concurrency ({max_concurrent}) reached.")
                             continue
 
-                    # 3. Mark old call as processed to prevent duplicate polling
-                    await conn.execute(
-                        "UPDATE calls SET outcome = 'callback_initiated', updated_at = NOW() WHERE id = $1", 
-                        row["old_call_id"]
-                    )
-
-                    # 4. Create new Call Record for the retry
+                    # 3. Create new Call Record for the retry (This inherently stops the old call from polling again!)
                     new_call_row = await conn.fetchrow(
                         """INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
                            VALUES ($1, $2, $3, $4, 'queued', NOW(), 'vobiz-pending', $5)
