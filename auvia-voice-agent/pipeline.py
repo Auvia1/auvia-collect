@@ -973,21 +973,34 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 # Determine credits used safely
                 credits_used = float(breakdown["billed_minutes"]) if breakdown and "billed_minutes" in breakdown else 0.0
 
-                # Safely parse date/time strings into Python objects for asyncpg
-                cb_date_str = lead_data.get("callbackDate")
-                cb_time_str = lead_data.get("callbackTime")
-
+                # Safely parse date and time strings into actual Python datetime objects
+                cb_date_str = str(lead_data.get("callbackDate") or "")
+                cb_time_str = str(lead_data.get("callbackTime") or "")
                 parsed_cb_date = None
                 parsed_cb_time = None
 
                 try:
                     import datetime
-                    if cb_date_str:
-                        parsed_cb_date = datetime.datetime.strptime(cb_date_str, "%Y-%m-%d").date()
-                    if cb_time_str:
-                        parsed_cb_time = datetime.datetime.strptime(cb_time_str, "%H:%M:%S").time()
+                    from zoneinfo import ZoneInfo
+                    
+                    if cb_date_str and cb_date_str.lower() != "null":
+                        parsed_cb_date = datetime.datetime.strptime(cb_date_str.strip(), "%Y-%m-%d").date()
+                    if cb_time_str and cb_time_str.lower() != "null":
+                        parsed_cb_time = datetime.datetime.strptime(cb_time_str.strip(), "%H:%M:%S").time()
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to parse callback date/time: {e}")
+
+                # 🚀 THE FIX: If the LLM understood "call later" but failed to do the math, force a 15-min fallback!
+                if lead_data.get("outcome") == "call_later" and not parsed_cb_date:
+                    try:
+                        import datetime
+                        from zoneinfo import ZoneInfo
+                        fallback_time = datetime.datetime.now(ZoneInfo('Asia/Kolkata')) + datetime.timedelta(minutes=15)
+                        parsed_cb_date = fallback_time.date()
+                        parsed_cb_time = fallback_time.time()
+                        logger.info(f"🔄 LLM missed exact time. Applied 15-minute fallback: {parsed_cb_date} {parsed_cb_time}")
+                    except Exception as e:
+                        logger.error(f"⚠️ Failed to apply fallback callback time: {e}")
 
                 # 1. Upsert the Call Record
                 await conn.execute("""

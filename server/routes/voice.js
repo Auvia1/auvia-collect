@@ -763,12 +763,6 @@ router.post('/vobiz-hangup', async (req, res) => {
     console.error('Error handling call record on hangup:', err);
   }
 
-  if (foundCampaignId) {
-    checkAndCompleteCampaign(foundCampaignId).catch(err => {
-      console.error('[CampaignCompletion] Error in async check:', err);
-    });
-  }
-
   res.json({ success: true });
 });
 
