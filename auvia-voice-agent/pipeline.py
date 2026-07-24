@@ -996,7 +996,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                     # If call did not reach a final resolved outcome (e.g., user hung up early, cut call, or asked to call later)
                     if attempt_num >= max_retries:
                         final_outcome = "other"
-                        logger.info(f"🛑 Call {db_call_id} reached max retry limit ({attempt_num}/{max_retries}). Marked as 'other'.")
+                        logger.info(f"🛑 Call {db_call_uuid} reached max retry limit ({attempt_num}/{max_retries}). Marked as 'other'.")
                     else:
                         final_outcome = "call_later"
 
@@ -1026,7 +1026,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         fallback_time = now_ist + datetime.timedelta(hours=cooldown_hours)
                         parsed_cb_date = fallback_time.date()
                         parsed_cb_time = fallback_time.time()
-                        logger.info(f"🔄 Scheduled callback for {db_call_id} in {cooldown_hours}h: {parsed_cb_date} {parsed_cb_time}")
+                        logger.info(f"🔄 Scheduled callback for {db_call_uuid} in {cooldown_hours}h: {parsed_cb_date} {parsed_cb_time}")
                     except Exception as e:
                         logger.error(f"⚠️ Failed to apply cooldown callback time: {e}")
 

@@ -161,7 +161,16 @@ async def initiate_call(req: InitiateCallRequest, request: Request):
         async with _db_pool.acquire() as conn:
             call_row = await conn.fetchrow(
                 """INSERT INTO calls (contact_id, campaign_id, clinic_id, attempt_number, call_status, started_at, telephony_call_id, amount)
-                   VALUES ($1, $2, $3, 1, 'queued', NOW(), 'vobiz-pending', $4)
+                   VALUES (
+                       $1, 
+                       $2, 
+                       $3, 
+                       (SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM calls WHERE contact_id = $1 AND campaign_id = $2), 
+                       'queued', 
+                       NOW(), 
+                       'vobiz-pending', 
+                       $4
+                   )
                    RETURNING id""",
                 uuid.UUID(req.contactId) if req.contactId else None,
                 uuid.UUID(req.campaignId) if req.campaignId else None,
