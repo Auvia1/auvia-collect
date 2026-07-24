@@ -714,44 +714,57 @@ router.post('/vobiz-hangup', async (req, res) => {
       // If the outcome is not set (null) or is 'other', the call didn't reach a definitive outcome
       // (e.g. busy, unanswered, hung up early, no response). We convert it to callback queue.
       if (!currentOutcome || currentOutcome === 'other') {
-        const tomorrow = new Date();
-        tomorrow.setDate(tomorrow.getDate() + 1);
-        const callbackDate = tomorrow.toISOString().split('T')[0];
-        const callbackTime = '10:00:00';
-
-        // Extract why it failed from the Vobiz payload, if provided
         const body = req.body || {};
         const query = req.query || {};
         const statusFromVobiz = (body.CallStatus || body.status || query.status || '').toLowerCase();
         const causeFromVobiz = (body.HangupCause || body.hangup_cause || '').toLowerCase();
 
+        let finalCallStatus = 'completed';
         let label = 'Unanswered';
-        if (currentStatus === 'in_progress') {
-          label = 'Hung up';
-        } else if (statusFromVobiz === 'busy' || causeFromVobiz === 'busy') {
-          label = 'Busy';
-        } else if (statusFromVobiz === 'no-answer' || causeFromVobiz === 'no-answer') {
-          label = 'Unanswered';
-        } else if (statusFromVobiz === 'failed' || causeFromVobiz === 'failed') {
+        if (statusFromVobiz === 'failed' || causeFromVobiz === 'failed') {
+          finalCallStatus = 'failed';
           label = 'Failed';
+        } else if (statusFromVobiz === 'busy' || causeFromVobiz === 'busy' || statusFromVobiz === 'no-answer' || causeFromVobiz === 'no-answer') {
+          finalCallStatus = 'not_answered';
+          label = statusFromVobiz === 'busy' || causeFromVobiz === 'busy' ? 'Busy' : 'Unanswered';
+        } else if (currentStatus === 'queued') {
+          finalCallStatus = 'not_answered';
+          label = 'Unanswered';
         } else {
-          label = currentStatus === 'queued' ? 'Unanswered' : 'Hung up';
+          finalCallStatus = 'completed';
+          label = 'Hung up';
         }
 
-        await db.query(
-          `UPDATE calls 
-           SET call_status = 'completed', 
-               outcome = 'call_later',
-               callback_date = $1,
-               callback_time = $2,
-               amount = 0,               -- Ensure credits billed is 0 for failed/busy/early hangup calls
-               ai_summary = $3,          -- Set summary to Busy / Hung up / Unanswered
-               ended_at = COALESCE(ended_at, now()),
-               updated_at = now()
-           WHERE id = $4`,
-          [callbackDate, callbackTime, label, callId]
-        );
-        console.log(`[VobizHangup] Call ${callId} failed or hung up early (outcome: ${currentOutcome || 'none'}). Marked as 'call_later' (${label}) and added to Callback Queue for ${callbackDate}`);
+        const updateQuery = `
+          UPDATE calls 
+          SET 
+            call_status = $1,
+            outcome = CASE 
+                WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN 'other'
+                ELSE 'call_later'
+            END,
+            callback_date = CASE 
+                WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN NULL
+                ELSE (NOW() AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 hour' * COALESCE(cl.retry_cooldown_hours, 2))::date
+            END,
+            callback_time = CASE 
+                WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN NULL
+                ELSE (NOW() AT TIME ZONE 'Asia/Kolkata' + INTERVAL '1 hour' * COALESCE(cl.retry_cooldown_hours, 2))::time
+            END,
+            amount = 0,
+            ai_summary = $2,
+            ended_at = COALESCE(calls.ended_at, NOW()),
+            updated_at = NOW()
+          FROM clinics cl
+          WHERE calls.clinic_id = cl.id AND calls.id = $3
+          RETURNING calls.outcome, calls.callback_date, calls.callback_time;
+        `;
+
+        const updateRes = await db.query(updateQuery, [finalCallStatus, label, callId]);
+        if (updateRes.rows.length > 0) {
+          const updatedRow = updateRes.rows[0];
+          console.log(`[VobizHangup] Call ${callId} updated (Outcome: ${updatedRow.outcome}, CallbackDate: ${updatedRow.callback_date}, CallbackTime: ${updatedRow.callback_time})`);
+        }
       } else {
         // If it already has a definitive outcome (e.g. paid_now, link_sent, not_interested),
         // we just mark the call as completed if it's still in queued or in_progress status.
