@@ -740,8 +740,8 @@ router.post('/vobiz-hangup', async (req, res) => {
           SET 
             call_status = $1,
             outcome = CASE 
-                WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN 'other'
-                ELSE 'call_later'
+                WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN 'other'::call_outcome
+                ELSE 'call_later'::call_outcome
             END,
             callback_date = CASE 
                 WHEN calls.attempt_number >= COALESCE(cl.max_retry_attempts, 3) THEN NULL
