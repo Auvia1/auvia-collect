@@ -973,6 +973,33 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 # Determine credits used safely
                 credits_used = float(breakdown["billed_minutes"]) if breakdown and "billed_minutes" in breakdown else 0.0
 
+                # Fetch clinic configuration and current attempt number for callback scheduling & retry bounds
+                clinic_settings = await conn.fetchrow(
+                    "SELECT retry_cooldown_hours, max_retry_attempts FROM clinics WHERE id = $1", 
+                    db_clinic_uuid
+                )
+                cooldown_hours = float(clinic_settings["retry_cooldown_hours"]) if clinic_settings and clinic_settings["retry_cooldown_hours"] is not None else 2.0
+                max_retries = int(clinic_settings["max_retry_attempts"]) if clinic_settings and clinic_settings["max_retry_attempts"] is not None else 3
+
+                call_row = await conn.fetchrow(
+                    "SELECT attempt_number FROM calls WHERE id = $1",
+                    db_call_uuid
+                )
+                attempt_num = int(call_row["attempt_number"]) if call_row and call_row["attempt_number"] is not None else 1
+
+                extracted_outcome = lead_data.get("outcome", "other")
+                FINAL_RESOLVED_OUTCOMES = ["link_sent", "paid_now", "not_interested"]
+
+                if extracted_outcome in FINAL_RESOLVED_OUTCOMES:
+                    final_outcome = extracted_outcome
+                else:
+                    # If call did not reach a final resolved outcome (e.g., user hung up early, cut call, or asked to call later)
+                    if attempt_num >= max_retries:
+                        final_outcome = "other"
+                        logger.info(f"🛑 Call {db_call_id} reached max retry limit ({attempt_num}/{max_retries}). Marked as 'other'.")
+                    else:
+                        final_outcome = "call_later"
+
                 # Safely parse date and time strings into actual Python datetime objects
                 cb_date_str = str(lead_data.get("callbackDate") or "")
                 cb_time_str = str(lead_data.get("callbackTime") or "")
@@ -990,17 +1017,18 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to parse callback date/time: {e}")
 
-                # 🚀 THE FIX: If the LLM understood "call later" but failed to do the math, force a 15-min fallback!
-                if lead_data.get("outcome") == "call_later" and not parsed_cb_date:
+                # If final_outcome is call_later but no explicit user date/time was given, apply the clinic cooldown delay (default 2 hrs)
+                if final_outcome == "call_later" and not parsed_cb_date:
                     try:
                         import datetime
                         from zoneinfo import ZoneInfo
-                        fallback_time = datetime.datetime.now(ZoneInfo('Asia/Kolkata')) + datetime.timedelta(minutes=15)
+                        now_ist = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+                        fallback_time = now_ist + datetime.timedelta(hours=cooldown_hours)
                         parsed_cb_date = fallback_time.date()
                         parsed_cb_time = fallback_time.time()
-                        logger.info(f"🔄 LLM missed exact time. Applied 15-minute fallback: {parsed_cb_date} {parsed_cb_time}")
+                        logger.info(f"🔄 Scheduled callback for {db_call_id} in {cooldown_hours}h: {parsed_cb_date} {parsed_cb_time}")
                     except Exception as e:
-                        logger.error(f"⚠️ Failed to apply fallback callback time: {e}")
+                        logger.error(f"⚠️ Failed to apply cooldown callback time: {e}")
 
                 # 1. Upsert the Call Record
                 await conn.execute("""
@@ -1035,7 +1063,7 @@ async def post_lead_to_server(session: dict, lead_data: dict, tracker: Conversat
                         callback_time = COALESCE(EXCLUDED.callback_time, calls.callback_time);
                 """,
                 db_call_uuid, db_contact_uuid, db_campaign_uuid, db_clinic_uuid, 
-                lead_data.get("outcome", "other"), tracker.duration(), recording_url,
+                final_outcome, tracker.duration(), recording_url,
                 json.dumps(tracker.turns), lead_data.get("aiSummary"), lead_data.get("sentiment"), telephony_call_id,
                 amount_val, json.dumps(breakdown) if breakdown else '{}', credits_used, parsed_cb_date, parsed_cb_time)
 
