@@ -269,10 +269,16 @@ router.get('/', authMiddleware, async (req, res) => {
              WHEN EXISTS (
                SELECT 1 FROM payment_links pl
                WHERE pl.contact_id = c.id AND pl.status = 'paid'
+             ) OR EXISTS (
+               SELECT 1 FROM calls ca
+               WHERE ca.contact_id = c.id AND ca.outcome IN ('paid_now', 'already_paid')
              ) THEN 'Paid'
              WHEN EXISTS (
                SELECT 1 FROM payment_links pl
                WHERE pl.contact_id = c.id AND pl.status IN ('sent', 'viewed', 'created')
+             ) OR EXISTS (
+               SELECT 1 FROM calls ca
+               WHERE ca.contact_id = c.id AND ca.outcome = 'link_sent'
              ) THEN 'Pending'
              ELSE 'Unpaid'
            END as payment_state,
@@ -356,9 +362,9 @@ router.get('/', authMiddleware, async (req, res) => {
     // 6. Call Outcomes
     const outcomesQuery = await db.query(
       `SELECT
-         COUNT(*) filter (where outcome in ('paid_now', 'already_paid')) as paid,
+         COUNT(*) filter (where outcome in ('paid_now', 'already_paid', 'link_sent') OR exists (select 1 from payment_links pl where pl.call_id = calls.id and pl.status = 'paid')) as paid,
          COUNT(*) filter (where outcome = 'call_later') as callback,
-         COUNT(*) filter (where call_status = 'not_answered') as no_answer,
+         COUNT(*) filter (where call_status in ('not_answered', 'failed') and (outcome is null or outcome not in ('paid_now', 'already_paid', 'link_sent', 'call_later', 'not_interested'))) as no_answer,
          COUNT(*) filter (where outcome = 'not_interested' or decline_reason is not null) as refused,
          COUNT(*) as total
        FROM calls
