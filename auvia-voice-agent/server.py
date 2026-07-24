@@ -336,8 +336,9 @@ async def vobiz_hangup(request: Request):
         try:
             async with _db_pool.acquire() as conn:
                 # 1. Retrieve call and clinic info
+                # 🚀 FIX: Fetch attempt_number and max_retry_attempts
                 call_row = await conn.fetchrow(
-                    """SELECT c.clinic_id, c.call_status, c.outcome, cl.retry_cooldown_hours
+                    """SELECT c.clinic_id, c.call_status, c.outcome, c.attempt_number, cl.retry_cooldown_hours, cl.max_retry_attempts
                        FROM calls c
                        JOIN clinics cl ON c.clinic_id = cl.id
                        WHERE c.id = $1 LIMIT 1""",
@@ -347,8 +348,10 @@ async def vobiz_hangup(request: Request):
                     clinic_id = call_row["clinic_id"]
                     current_status = call_row["call_status"]
                     current_outcome = call_row["outcome"]
+                    attempt_num = call_row["attempt_number"] or 1
+                    max_retries = call_row["max_retry_attempts"] or 3
                     
-                    # 2. If call didn't reach definitive outcome, convert to callback queue
+                    # 2. If call didn't reach definitive outcome, process retry logic
                     if not current_outcome or current_outcome == "other":
                         from zoneinfo import ZoneInfo
                         IST = ZoneInfo('Asia/Kolkata')
@@ -377,7 +380,6 @@ async def vobiz_hangup(request: Request):
                         status_from_vobiz = (data.get("CallStatus") or data.get("status") or "").lower()
                         cause_from_vobiz = (data.get("HangupCause") or data.get("hangup_cause") or "").lower()
                         
-                        # 🚀 THE FIX: Accurately map Vobiz network events to your specific Database Enums
                         final_call_status = "completed"
                         label = "Unanswered"
 
@@ -386,28 +388,35 @@ async def vobiz_hangup(request: Request):
                             label = "Failed"
                         elif "no-answer" in [status_from_vobiz, cause_from_vobiz] or "busy" in [status_from_vobiz, cause_from_vobiz]:
                             final_call_status = "not_answered"
-                            label = "Unanswered"
+                            label = "Busy" if "busy" in [status_from_vobiz, cause_from_vobiz] else "Unanswered"
                         elif current_status == "queued":
                             final_call_status = "not_answered"
                             label = "Unanswered"
                         else:
                             final_call_status = "completed"
-                            label = "Hung up" # Call connected, but user hung up before the AI could set an outcome
+                            label = "Hung up"
+                            
+                        # 🚀 THE FIX: Enforce Max Retry Limits!
+                        if attempt_num >= max_retries:
+                            final_outcome = "other"  # 'other' removes it from the 'call_later' retry loop
+                            label = f"Max Retries Reached ({label})"
+                        else:
+                            final_outcome = "call_later"
                             
                         await conn.execute(
                             """UPDATE calls 
                                SET call_status = $1, 
-                                   outcome = 'call_later',
-                                   callback_date = $2,
-                                   callback_time = $3,
+                                   outcome = $2,
+                                   callback_date = $3,
+                                   callback_time = $4,
                                    amount = 0,
-                                   ai_summary = $4,
+                                   ai_summary = $5,
                                    ended_at = COALESCE(ended_at, NOW()),
                                    updated_at = NOW()
-                               WHERE id = $5""",
-                            final_call_status, callback_date, callback_time, label, uuid.UUID(db_call_id)
+                               WHERE id = $6""",
+                            final_call_status, final_outcome, callback_date, callback_time, label, uuid.UUID(db_call_id)
                         )
-                        logger.info(f"✅ Call {db_call_id} marked as callback 'call_later' (Status: {final_call_status}, Reason: {label})")
+                        logger.info(f"✅ Call {db_call_id} marked as '{final_outcome}' (Status: {final_call_status}, Reason: {label})")
                     else:
                         if current_status in ["in_progress", "queued"]:
                             await conn.execute(
