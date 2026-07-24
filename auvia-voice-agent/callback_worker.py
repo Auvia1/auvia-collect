@@ -4,11 +4,11 @@ import json
 import httpx
 import asyncio
 from datetime import datetime
-import pytz
+from zoneinfo import ZoneInfo
 from loguru import logger
 from tools.pool import get_pool
 
-IST = pytz.timezone('Asia/Kolkata')
+IST = ZoneInfo('Asia/Kolkata')
 VOBIZ_API_URL = os.getenv("VOBIZ_API_URL", "https://api.vobiz.ai/api/v1/Account")
 
 async def process_scheduled_callbacks():

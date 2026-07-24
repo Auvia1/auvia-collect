@@ -350,8 +350,8 @@ async def vobiz_hangup(request: Request):
                     
                     # 2. If call didn't reach definitive outcome, convert to callback queue
                     if not current_outcome or current_outcome == "other":
-                        import pytz
-                        IST = pytz.timezone('Asia/Kolkata')
+                        from zoneinfo import ZoneInfo
+                        IST = ZoneInfo('Asia/Kolkata')
                         now_ist = datetime.datetime.now(IST)
                         
                         cooldown_hours = call_row["retry_cooldown_hours"]
