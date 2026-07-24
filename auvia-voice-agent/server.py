@@ -746,9 +746,9 @@ async def websocket_endpoint(ws: WebSocket, call_id: str):
         if _db_pool:
             try:
                 async with _db_pool.acquire() as conn:
-                    # Search by telephony_call_id since vobiz_call_sid is set only after call ends
+                    # Search by telephony_call_id OR the database ID 
                     call_row = await conn.fetchrow(
-                        "SELECT id, campaign_id, clinic_id, contact_id FROM calls WHERE telephony_call_id = $1", 
+                        "SELECT id, campaign_id, clinic_id, contact_id FROM calls WHERE telephony_call_id = $1 OR id::text = $1", 
                         call_id
                     )
                     if call_row:

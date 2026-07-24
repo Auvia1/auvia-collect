@@ -92,7 +92,8 @@ async def process_scheduled_callbacks():
 
 async def trigger_vobiz_outbound(data, db_call_id):
     """Executes the Vobiz API request and caches the session."""
-    public_url = os.getenv("PUBLIC_API_URL", "https://api.nexovai.in").rstrip("/")
+    public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL") or "https://collectagent.nexovai.in"
+    public_url = public_url.rstrip("/")
     auth_id = data["vobiz_auth_id"]
     auth_token = data["vobiz_auth_token"]
     
@@ -152,6 +153,7 @@ async def trigger_vobiz_outbound(data, db_call_id):
                         "telephonyCallId": vobiz_call_id
                     }
                     await redis_client.setex(f"ws_session:{vobiz_call_id}", 600, json.dumps(session_data))
+                    await redis_client.setex(f"ws_session:{db_call_id}", 600, json.dumps(session_data))
                     await redis_client.incr(f"active_calls:{data['clinic_id']}")
                     
                 logger.info(f"✅ Automated Callback Initiated: {vobiz_call_id} for {data['contact_name']}")
