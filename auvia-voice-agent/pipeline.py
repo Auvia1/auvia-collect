@@ -1452,11 +1452,11 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
     context = LLMContext(messages, tools=get_tools_schema())
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # 🛡️ STRICT VAD: Fixed for short words and concurrent CPU load
+    # 🛡️ STRICT VAD: Tuned for ultra-low latency and noise immunity
     custom_vad = SileroVADAnalyzer(params=VADParams(
-        stop_secs=0.8, 
-        start_secs=0.2,    # 🚀 CHANGED: Must be 0.2 to catch normal speech!
-        confidence=0.70    # 🚀 Lowered slightly to pick up audio better
+        stop_secs=0.4,     # 🚀 LATENCY FIX: Halved from 0.8s. The AI will reply instantly.
+        start_secs=0.4,    # 🚀 INTERRUPTION FIX: Increased from 0.2s. Ignores "hmm", "haa", and coughs.
+        confidence=0.85    # 🚀 NOISE FIX: Increased from 0.70. Ignores background chatter.
     ))
 
     transport = FastAPIWebsocketTransport(
@@ -1467,8 +1467,8 @@ async def run_bot(websocket: WebSocket, session: dict, db_pool):
         )
     )
 
-    # 🎧 SAMPLE RATE FIX: Force exactly 8000Hz across all models
-    stt = SarvamSTTService(api_key=os.getenv("SARVAM_API_KEY"), sample_rate=8000, settings=SarvamSTTService.Settings(model="saaras:v3", high_vad_sensitivity=True, vad_signals=True))
+    # 🎧 STT SENSITIVITY FIX: Removed high_vad_sensitivity=True to stop it from over-triggering
+    stt = SarvamSTTService(api_key=os.getenv("SARVAM_API_KEY"), sample_rate=8000, settings=SarvamSTTService.Settings(model="saaras:v3", vad_signals=True))
     tts = SarvamTTSService(api_key=os.getenv("SARVAM_API_KEY"), sample_rate=8000, settings=SarvamTTSService.Settings(model="bulbul:v3", voice="ritu"))
     llm = GoogleLLMService(api_key=os.getenv("GEMINI_API_KEY"), settings=GoogleLLMService.Settings(model="gemini-2.5-flash"))
 
