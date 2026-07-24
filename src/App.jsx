@@ -21,8 +21,10 @@ import BuyCredits from './pages/BuyCredits.jsx'
 import BillingHistory from './pages/BillingHistory.jsx'
 import CreditManagement from './pages/CreditManagement.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
+import ClinicDashboard from './pages/ClinicDashboard.jsx'
+import ActivityLog from './pages/ActivityLog.jsx'
 
-// Smart root redirect: send admin users to /admin/dashboard, clinic users to /campaigns
+// Smart root redirect: send admin users to /admin/dashboard, clinic users to /dashboard
 function RootRedirect() {
   const token = localStorage.getItem('auvia_token')
   if (!token) return <Navigate to="/login" replace />
@@ -30,7 +32,7 @@ function RootRedirect() {
   if (user && (user.userType === 'admin' || user.platformRole === 'platform_admin')) {
     return <Navigate to="/admin/dashboard" replace />
   }
-  return <Navigate to="/campaigns" replace />
+  return <Navigate to="/dashboard" replace />
 }
 
 export default function App() {
@@ -51,6 +53,7 @@ export default function App() {
 
         {/* ── CLINIC DASHBOARD (Resplice, Auvia Medical, etc.) ── */}
         <Route element={<DashboardLayout />}>
+          <Route path="/dashboard" element={<ClinicDashboard />} />
           <Route path="/campaigns" element={<Campaigns />} />
           <Route path="/campaigns/new" element={<NewCampaign />} />
           <Route path="/campaigns/:id/contacts" element={<ReviewContacts />} />
@@ -63,6 +66,7 @@ export default function App() {
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/buy-credits" element={<BuyCredits />} />
           <Route path="/billing-history" element={<BillingHistory />} />
+          <Route path="/activity-log" element={<ActivityLog />} />
         </Route>
 
         {/* Smart root + catch-all */}

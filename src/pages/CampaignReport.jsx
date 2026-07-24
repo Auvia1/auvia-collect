@@ -124,6 +124,12 @@ export default function CampaignReport() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    api.logActivity({
+      action: 'Report Exported',
+      category: 'campaign',
+      description: `Campaign report (CSV) downloaded for "${campaignName}" from Campaign Report section`,
+      metadata: { section: 'Campaign Report', campaignName, format: 'CSV' }
+    }).catch(() => {});
   }
 
   function handleExportExcel() {
@@ -152,6 +158,12 @@ export default function CampaignReport() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    api.logActivity({
+      action: 'Report Exported',
+      category: 'campaign',
+      description: `Campaign report (Excel) downloaded for "${campaignName}" from Campaign Report section`,
+      metadata: { section: 'Campaign Report', campaignName, format: 'Excel' }
+    }).catch(() => {});
   }
 
   function handleExportPDF() {

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 import { api } from '../services/api.js'
 
 const CONTEXT_VARIANT = {
@@ -131,16 +132,16 @@ export default function ReviewContacts() {
               className="w-full bg-surface-container-lowest border border-outline-variant rounded-lg pl-10 pr-sm py-2 font-body-sm text-body-sm focus:border-primary focus:ring-1 focus:ring-primary transition-colors text-on-surface"
             />
           </div>
-          <select
+          <CustomDropdown
             value={filterContext}
-            onChange={(e) => setFilterContext(e.target.value)}
-            className="w-full sm:w-48 bg-surface-container-lowest border border-outline-variant rounded-lg pl-sm pr-10 py-2 font-body-sm text-body-sm text-on-surface cursor-pointer"
-          >
-            <option>All Contexts</option>
-            {uniqueContexts.map((ctx) => (
-              <option key={ctx} value={ctx}>{ctx}</option>
-            ))}
-          </select>
+            options={[
+              { value: 'All Contexts', label: 'All Contexts' },
+              ...uniqueContexts.map((ctx) => ({ value: ctx, label: ctx }))
+            ]}
+            onChange={setFilterContext}
+            icon="filter_alt"
+            minWidthClass="w-full sm:w-48"
+          />
         </div>
       </div>
 

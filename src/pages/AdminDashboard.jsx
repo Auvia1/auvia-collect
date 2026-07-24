@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { GoogleMap, useJsApiLoader, Marker, InfoWindow } from '@react-google-maps/api'
 import { api } from '../services/api.js'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 
 // ── Create Clinic Modal ──────────────────────────────────────────────────────
 const INITIAL_FORM = {
@@ -104,18 +105,30 @@ function CreateClinicModal({ onClose, onCreated }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={labelCls}>Status</label>
-                  <select className={inputCls} value={form.status} onChange={e => set('status', e.target.value)}>
-                    <option value="trial">Trial</option>
-                    <option value="active">Active</option>
-                    <option value="suspended">Suspended</option>
-                  </select>
+                  <CustomDropdown
+                    value={form.status}
+                    options={[
+                      { value: 'trial', label: 'Trial' },
+                      { value: 'active', label: 'Active' },
+                      { value: 'suspended', label: 'Suspended' }
+                    ]}
+                    onChange={(val) => set('status', val)}
+                    icon="verified"
+                    minWidthClass="w-full"
+                  />
                 </div>
                 <div>
                   <label className={labelCls}>Preferred Channel</label>
-                  <select className={inputCls} value={form.preferred_channel} onChange={e => set('preferred_channel', e.target.value)}>
-                    <option value="whatsapp">WhatsApp</option>
-                    <option value="sms">SMS</option>
-                  </select>
+                  <CustomDropdown
+                    value={form.preferred_channel}
+                    options={[
+                      { value: 'whatsapp', label: 'WhatsApp' },
+                      { value: 'sms', label: 'SMS' }
+                    ]}
+                    onChange={(val) => set('preferred_channel', val)}
+                    icon="chat"
+                    minWidthClass="w-full"
+                  />
                 </div>
               </div>
             </div>

@@ -2,12 +2,14 @@ import { NavLink } from 'react-router-dom'
 import { api } from '../../services/api.js'
 
 const NAV_ITEMS = [
-  { to: '/campaigns', label: 'Campaigns', icon: 'campaign' },
-  { to: '/call-log', label: 'Call Logs', icon: 'call' },
-  { to: '/callback-queue', label: 'Callback Queue', icon: 'schedule' },
-  { to: '/buy-credits', label: 'Buy Credits', icon: 'add_shopping_cart' },
+  { to: '/dashboard',       label: 'Dashboard',      icon: 'dashboard' },
+  { to: '/campaigns',       label: 'Campaigns',       icon: 'campaign' },
+  { to: '/call-log',        label: 'Call Logs',       icon: 'call' },
+  { to: '/callback-queue',  label: 'Callback Queue',  icon: 'schedule' },
+  { to: '/buy-credits',     label: 'Buy Credits',     icon: 'add_shopping_cart' },
   { to: '/billing-history', label: 'Billing History', icon: 'receipt_long' },
-  { to: '/settings', label: 'Settings', icon: 'settings' },
+  { to: '/activity-log',    label: 'Activity Log',    icon: 'timeline' },
+  { to: '/settings',        label: 'Settings',        icon: 'settings' },
 ]
 
 export default function Sidebar() {

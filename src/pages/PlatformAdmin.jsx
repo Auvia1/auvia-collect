@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 import { api } from '../services/api.js'
 import PlatformUsersPanel from '../components/admin/PlatformUsersPanel.jsx'
 
@@ -404,14 +405,16 @@ export default function PlatformAdmin() {
                       </div>
                       <div>
                         <label className="block text-xs font-semibold text-[#475569] mb-1">Status</label>
-                        <select
+                        <CustomDropdown
                           value={selectedClinicDetails.status || 'active'}
-                          onChange={(e) => handleInputChange('status', e.target.value)}
-                          className="w-full border border-gray-200 rounded-lg p-2 text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81] transition-all bg-transparent cursor-pointer"
-                        >
-                          <option value="active">Active</option>
-                          <option value="suspended">Suspended</option>
-                        </select>
+                          options={[
+                            { value: 'active', label: 'Active' },
+                            { value: 'suspended', label: 'Suspended' }
+                          ]}
+                          onChange={(val) => handleInputChange('status', val)}
+                          icon="verified"
+                          minWidthClass="w-full"
+                        />
                       </div>
                     </div>
                   </div>

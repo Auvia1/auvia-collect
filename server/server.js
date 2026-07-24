@@ -12,6 +12,9 @@ import settingsRouter from './routes/settings.js';
 import usersRouter from './routes/users.js';
 import adminRouter from './routes/admin.js';
 import voiceRouter from './routes/voice.js';
+import dashboardRouter from './routes/dashboard.js';
+import activityLogsRouter from './routes/activityLogs.js';
+
 
 dotenv.config();
 
@@ -72,6 +75,9 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/voice', voiceRouter);
+app.use('/api/dashboard', dashboardRouter);
+app.use('/api/activity-logs', activityLogsRouter);
+
 
 // Root test endpoint
 app.get('/api/health', (req, res) => {

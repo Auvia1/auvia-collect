@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { api } from '../services/api.js'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 
 function cleanName(raw) {
   return raw ? raw.replace(/\*/g, '').replace(/_/g, '').trim() : '\u2014'
@@ -53,6 +54,10 @@ export default function CallbackQueue() {
       await api.startVoiceBot(row.campaignId || row.id, row.contactId)
       showToast(`Outbound call placed successfully for ${cleanName(row.name)}!`, 'success')
       setCalledRows(prev => ({ ...prev, [row.id]: true }))
+      // Log the manual call
+      api.logActivity({ action: 'Manual Call Placed', category: 'callback',
+        description: `Call placed to ${cleanName(row.name)} (${row.phone})`,
+        metadata: { callId: row.id, phone: row.phone } }).catch(() => {})
       setTimeout(() => {
         setQueue(prev => prev.filter(item => item.id !== row.id))
       }, 1500)
@@ -63,23 +68,32 @@ export default function CallbackQueue() {
     }
   }
 
+  // Parse date string as LOCAL date (avoids UTC midnight timezone shift from Postgres DATE fields)
+  const parseLocalDate = (dateStr) => {
+    if (!dateStr) return null
+    // '2026-07-23' → treat as local midnight, not UTC midnight
+    const [y, m, d] = String(dateStr).split('T')[0].split('-').map(Number)
+    return new Date(y, m - 1, d)
+  }
+
   // Helper date metrics
   const stats = useMemo(() => {
     let total = queue.length
     let todayCount = 0
     let overdueCount = 0
 
-    const todayStr = new Date().toDateString()
-    const todayMs = new Date().setHours(0,0,0,0)
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const tomorrowStart = new Date(todayStart)
+    tomorrowStart.setDate(todayStart.getDate() + 1)
 
     queue.forEach(item => {
       if (item.rawDate) {
-        const itemDate = new Date(item.rawDate)
-        const itemMs = new Date(item.rawDate).setHours(0,0,0,0)
-
-        if (itemDate.toDateString() === todayStr) {
+        const itemDate = parseLocalDate(item.rawDate)
+        if (!itemDate) return
+        if (itemDate >= todayStart && itemDate < tomorrowStart) {
           todayCount++
-        } else if (itemMs < todayMs) {
+        } else if (itemDate < todayStart) {
           overdueCount++
         }
       }
@@ -91,14 +105,17 @@ export default function CallbackQueue() {
   // Get callback urgency classification
   const getCallbackUrgency = (item) => {
     if (!item.rawDate) return 'future'
-    const todayStr = new Date().toDateString()
-    const todayMs = new Date().setHours(0,0,0,0)
-    const itemDate = new Date(item.rawDate)
-    const itemMs = new Date(item.rawDate).setHours(0,0,0,0)
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const tomorrowStart = new Date(todayStart)
+    tomorrowStart.setDate(todayStart.getDate() + 1)
 
-    if (itemDate.toDateString() === todayStr) {
+    const itemDate = parseLocalDate(item.rawDate)
+    if (!itemDate) return 'future'
+
+    if (itemDate >= todayStart && itemDate < tomorrowStart) {
       return 'today'
-    } else if (itemMs < todayMs) {
+    } else if (itemDate < todayStart) {
       return 'overdue'
     }
     return 'future'
@@ -228,31 +245,31 @@ export default function CallbackQueue() {
 
         <div className="flex items-center gap-sm flex-wrap sm:flex-nowrap">
           {/* Filter Dropdown */}
-          <div className="relative flex-1 sm:flex-none">
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="w-full sm:w-auto appearance-none pl-3 pr-8 py-1.5 bg-surface-container-lowest border border-outline-variant rounded-lg font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-            >
-              <option value="all">All Dates</option>
-              <option value="today_overdue">Today &amp; Overdue</option>
-              <option value="today">Today only</option>
-              <option value="overdue">Overdue only</option>
-              <option value="future">Upcoming callbacks</option>
-            </select>
-          </div>
-          {/* Sort Dropdown */}
-          <div className="relative flex-1 sm:flex-none">
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="w-full sm:w-auto appearance-none pl-3 pr-8 py-1.5 bg-surface-container-lowest border border-outline-variant rounded-lg font-body-sm text-body-sm text-on-surface focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-            >
-              <option value="soonest">Soonest Callback</option>
-              <option value="amount_high">Highest Amount Due</option>
-              <option value="amount_low">Lowest Amount Due</option>
-            </select>
-          </div>
+          <CustomDropdown
+            value={statusFilter}
+            options={[
+              { value: 'all', label: 'All Dates' },
+              { value: 'today_overdue', label: 'Today & Overdue' },
+              { value: 'today', label: 'Today only' },
+              { value: 'overdue', label: 'Overdue only' },
+              { value: 'future', label: 'Upcoming callbacks' }
+            ]}
+            onChange={setStatusFilter}
+            icon="event"
+            minWidthClass="w-full sm:w-auto min-w-[170px]"
+          />
+
+          <CustomDropdown
+            value={sortBy}
+            options={[
+              { value: 'soonest', label: 'Soonest Callback' },
+              { value: 'amount_high', label: 'Highest Amount Due' },
+              { value: 'amount_low', label: 'Lowest Amount Due' }
+            ]}
+            onChange={setSortBy}
+            icon="sort"
+            minWidthClass="w-full sm:w-auto min-w-[180px]"
+          />
         </div>
       </div>
 
@@ -325,7 +342,11 @@ export default function CallbackQueue() {
                           <span className="material-symbols-outlined text-[14px]">
                             {urgency === 'overdue' ? 'warning' : urgency === 'today' ? 'schedule' : 'event'}
                           </span>
-                          {urgency === 'overdue' ? 'Overdue' : urgency === 'today' ? 'Today' : row.callbackTime.split(',')[0]}
+                          {row.rawDate ? (
+                            parseLocalDate(row.rawDate)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                          ) : (
+                            'Scheduled'
+                          )}
                         </span>
                       </td>
                       <td className="px-6 py-4 font-body-md text-body-md text-on-surface">{row.time || '10:00 AM'}</td>

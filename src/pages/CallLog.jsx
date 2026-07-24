@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 import { api, fetchRecordingBlobUrl } from '../services/api.js'
 
 const CALL_STATUS_VARIANT = {
@@ -149,6 +150,13 @@ export default function CallLog() {
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
+    // Log the export — clearly label which section and what filters were active
+    api.logActivity({
+      action: 'Report Exported',
+      category: 'calls',
+      description: `Call Logs report downloaded from Call Logs section — ${filteredRows.length} records`,
+      metadata: { section: 'Call Logs', count: filteredRows.length }
+    }).catch(() => {})
   }
 
   if (loading) {
@@ -185,40 +193,39 @@ export default function CallLog() {
           />
         </div>
 
-        <select
+        <CustomDropdown
           value={campaignFilter}
-          onChange={(e) => setCampaignFilter(e.target.value)}
-          className="border border-outline-variant rounded-lg px-3 py-2 text-body-sm text-on-surface-variant bg-transparent focus:ring-1 focus:ring-primary focus:border-primary cursor-pointer"
-        >
-          <option value="">Campaign: All</option>
-          {campaigns.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: '', label: 'Campaign: All' },
+            ...campaigns.map((c) => ({ value: c.id, label: c.name }))
+          ]}
+          onChange={setCampaignFilter}
+          icon="campaign"
+        />
 
-        <select
+        <CustomDropdown
           value={callStatusFilter}
-          onChange={(e) => setCallStatusFilter(e.target.value)}
-          className="border border-outline-variant rounded-lg px-3 py-2 text-body-sm text-on-surface-variant bg-transparent focus:ring-1 focus:ring-primary focus:border-primary cursor-pointer"
-        >
-          <option value="">Call Status: All</option>
-          <option>Completed</option>
-          <option>Not Answered</option>
-          <option>Failed</option>
-        </select>
+          options={[
+            { value: '', label: 'Call Status: All' },
+            { value: 'Completed', label: 'Completed' },
+            { value: 'Not Answered', label: 'Not Answered' },
+            { value: 'Failed', label: 'Failed' }
+          ]}
+          onChange={setCallStatusFilter}
+          icon="phone_callback"
+        />
 
-        <select
+        <CustomDropdown
           value={paymentStatusFilter}
-          onChange={(e) => setPaymentStatusFilter(e.target.value)}
-          className="border border-outline-variant rounded-lg px-3 py-2 text-body-sm text-on-surface-variant bg-transparent focus:ring-1 focus:ring-primary focus:border-primary cursor-pointer"
-        >
-          <option value="">Payment: All</option>
-          <option>Paid</option>
-          <option>Unpaid</option>
-          <option>Payment Link Sent</option>
-        </select>
+          options={[
+            { value: '', label: 'Payment: All' },
+            { value: 'Paid', label: 'Paid' },
+            { value: 'Unpaid', label: 'Unpaid' },
+            { value: 'Payment Link Sent', label: 'Payment Link Sent' }
+          ]}
+          onChange={setPaymentStatusFilter}
+          icon="payments"
+        />
 
         {(search || campaignFilter || callStatusFilter || paymentStatusFilter) && (
           <button

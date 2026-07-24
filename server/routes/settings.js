@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
+import { logActivity } from '../utils/activityLog.js';
 
 const router = express.Router();
 
@@ -9,10 +10,11 @@ const router = express.Router();
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT name, razorpay_key_id, razorpay_key_secret,
-              whatsapp_sender_id, sms_sender_id, preferred_channel,
+      `SELECT name, razorpay_key_id, razorpay_key_secret, razorpay_webhook_secret,
+              whatsapp_sender_id, meta_access_token, meta_phone_number_id, waba_id,
               max_retry_attempts, retry_cooldown_hours,
-              calling_window_start, calling_window_end, credits, max_concurrent_calls
+              calling_window_start, calling_window_end, credits, max_concurrent_calls,
+              vobiz_auth_id, vobiz_auth_token, system_prompt
        FROM clinics
        WHERE id = $1 LIMIT 1`,
       [req.clinicId]
@@ -27,15 +29,20 @@ router.get('/', authMiddleware, async (req, res) => {
       organizationName: c.name,
       razorpayKeyId: c.razorpay_key_id || '',
       razorpayKeySecret: c.razorpay_key_secret || '',
+      razorpayWebhookSecret: c.razorpay_webhook_secret || '',
       whatsappSenderId: c.whatsapp_sender_id || '',
-      smsSenderId: c.sms_sender_id || '',
-      preferredChannel: c.preferred_channel,
+      metaAccessToken: c.meta_access_token || '',
+      metaPhoneNumberId: c.meta_phone_number_id || '',
+      wabaId: c.waba_id || '',
       maxRetryAttempts: c.max_retry_attempts,
       retryCooldownHours: c.retry_cooldown_hours,
       callingWindowStart: c.calling_window_start.substring(0, 5),
       callingWindowEnd: c.calling_window_end.substring(0, 5),
       credits: c.credits || 0,
       maxConcurrentCalls: c.max_concurrent_calls || 5,
+      vobizAuthId: c.vobiz_auth_id || '',
+      vobizAuthToken: c.vobiz_auth_token || '',
+      systemPrompt: c.system_prompt || '',
     });
   } catch (err) {
     console.error('Error fetching settings:', err);
@@ -61,7 +68,6 @@ router.get('/billing-history', authMiddleware, async (req, res) => {
 });
 
 // POST /api/settings/recharge - Recharge credits
-// POST /api/settings/recharge - Recharge credits (Initiate Razorpay order)
 router.post('/recharge', authMiddleware, async (req, res) => {
   const { credits, amount } = req.body;
   if (!credits || !amount) {
@@ -177,6 +183,9 @@ router.post('/recharge/confirm-mock', authMiddleware, async (req, res) => {
       );
 
       await db.query('COMMIT');
+      logActivity(tx.clinic_id, req.user, 'Credits Purchased', 'billing',
+        `${tx.credits} credits added to account`,
+        { credits: tx.credits, orderId });
       return res.json({
         success: true,
         message: 'Mock payment verified successfully.',
@@ -302,14 +311,19 @@ router.put('/', authMiddleware, async (req, res) => {
     organizationName,
     razorpayKeyId,
     razorpayKeySecret,
+    razorpayWebhookSecret,
     whatsappSenderId,
-    smsSenderId,
-    preferredChannel,
+    metaAccessToken,
+    metaPhoneNumberId,
+    wabaId,
     maxRetryAttempts,
     retryCooldownHours,
     callingWindowStart,
     callingWindowEnd,
     maxConcurrentCalls,
+    vobizAuthId,
+    vobizAuthToken,
+    systemPrompt,
   } = req.body;
 
   try {
@@ -318,32 +332,44 @@ router.put('/', authMiddleware, async (req, res) => {
        SET name = COALESCE($1, name),
            razorpay_key_id = COALESCE($2, razorpay_key_id),
            razorpay_key_secret = COALESCE($3, razorpay_key_secret),
-           whatsapp_sender_id = COALESCE($4, whatsapp_sender_id),
-           sms_sender_id = COALESCE($5, sms_sender_id),
-           preferred_channel = COALESCE($6, preferred_channel),
-           max_retry_attempts = COALESCE($7, max_retry_attempts),
-           retry_cooldown_hours = COALESCE($8, retry_cooldown_hours),
-           calling_window_start = COALESCE($9, calling_window_start),
-           calling_window_end = COALESCE($10, calling_window_end),
-           max_concurrent_calls = COALESCE($11, max_concurrent_calls)
-       WHERE id = $12`,
+           razorpay_webhook_secret = COALESCE($4, razorpay_webhook_secret),
+           whatsapp_sender_id = COALESCE($5, whatsapp_sender_id),
+           meta_access_token = COALESCE($6, meta_access_token),
+           meta_phone_number_id = COALESCE($7, meta_phone_number_id),
+           waba_id = COALESCE($8, waba_id),
+           max_retry_attempts = COALESCE($9, max_retry_attempts),
+           retry_cooldown_hours = COALESCE($10, retry_cooldown_hours),
+           calling_window_start = COALESCE($11, calling_window_start),
+           calling_window_end = COALESCE($12, calling_window_end),
+           max_concurrent_calls = COALESCE($13, max_concurrent_calls),
+           vobiz_auth_id = COALESCE($14, vobiz_auth_id),
+           vobiz_auth_token = COALESCE($15, vobiz_auth_token),
+           system_prompt = COALESCE($16, system_prompt)
+       WHERE id = $17`,
       [
         organizationName,
         razorpayKeyId,
         razorpayKeySecret,
+        razorpayWebhookSecret,
         whatsappSenderId,
-        smsSenderId,
-        preferredChannel,
+        metaAccessToken,
+        metaPhoneNumberId,
+        wabaId,
         maxRetryAttempts ? parseInt(maxRetryAttempts) : null,
         retryCooldownHours ? parseInt(retryCooldownHours) : null,
         callingWindowStart,
         callingWindowEnd,
         maxConcurrentCalls ? parseInt(maxConcurrentCalls) : null,
+        vobizAuthId,
+        vobizAuthToken,
+        systemPrompt,
         req.clinicId
       ]
     );
 
     res.json({ success: true, message: 'Settings saved successfully' });
+    logActivity(req.clinicId, req.user, 'Settings Updated', 'settings',
+      'Clinic settings were updated', {});
   } catch (err) {
     console.error('Error updating settings:', err);
     res.status(500).json({ error: 'Failed to save settings' });

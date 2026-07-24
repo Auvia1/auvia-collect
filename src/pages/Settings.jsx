@@ -1,12 +1,16 @@
 import { useState, useEffect } from 'react'
 import Button from '../components/ui/Button.jsx'
 import { api } from '../services/api.js'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 
-const TABS = ['Payment Integration', 'Messaging', 'Calling Rules', 'General']
+const TABS = ['Payment Integration', 'Telephony & AI Config', 'WhatsApp Integration', 'Calling Rules', 'General']
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState(TABS[0])
   const [showSecret, setShowSecret] = useState(false)
+  const [showWebhookSecret, setShowWebhookSecret] = useState(false)
+  const [showVobizSecret, setShowVobizSecret] = useState(false)
+  const [showMetaSecret, setShowMetaSecret] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -17,14 +21,19 @@ export default function SettingsPage() {
     organizationName: '',
     razorpayKeyId: '',
     razorpayKeySecret: '',
+    razorpayWebhookSecret: '',
     whatsappSenderId: '',
-    smsSenderId: '',
-    preferredChannel: 'whatsapp',
+    metaAccessToken: '',
+    metaPhoneNumberId: '',
+    wabaId: '',
     maxRetryAttempts: 3,
     retryCooldownHours: 6,
     callingWindowStart: '09:00',
     callingWindowEnd: '19:00',
     maxConcurrentCalls: 5,
+    vobizAuthId: '',
+    vobizAuthToken: '',
+    systemPrompt: '',
   })
 
   useEffect(() => {
@@ -109,7 +118,7 @@ export default function SettingsPage() {
                   placeholder="rzp_live_xxxxxxxxxxxx"
                   value={settings.razorpayKeyId}
                   onChange={(e) => handleChange('razorpayKeyId', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </div>
               <div className="space-y-sm">
@@ -120,7 +129,7 @@ export default function SettingsPage() {
                     placeholder="••••••••••••••••"
                     value={settings.razorpayKeySecret}
                     onChange={(e) => handleChange('razorpayKeySecret', e.target.value)}
-                    className="w-full border border-outline-variant rounded-lg px-sm py-2 pr-10 font-body-sm text-body-sm bg-transparent text-on-surface"
+                    className="w-full border border-outline-variant rounded-lg px-sm py-2 pr-10 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                   />
                   <button
                     type="button"
@@ -133,11 +142,78 @@ export default function SettingsPage() {
                   </button>
                 </div>
               </div>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">Webhook Secret</label>
+                <div className="relative">
+                  <input
+                    type={showWebhookSecret ? 'text' : 'password'}
+                    placeholder="Webhook verification secret..."
+                    value={settings.razorpayWebhookSecret}
+                    onChange={(e) => handleChange('razorpayWebhookSecret', e.target.value)}
+                    className="w-full border border-outline-variant rounded-lg px-sm py-2 pr-10 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowWebhookSecret((s) => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {showWebhookSecret ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </button>
+                </div>
+              </div>
               <Button variant="secondary" className="self-start">Test Connection</Button>
             </>
           )}
 
-          {activeTab === 'Messaging' && (
+          {activeTab === 'Telephony & AI Config' && (
+            <>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">Vobiz Auth Username/ID</label>
+                <input
+                  type="text"
+                  placeholder="Vobiz API username/ID..."
+                  value={settings.vobizAuthId}
+                  onChange={(e) => handleChange('vobizAuthId', e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                />
+              </div>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">Vobiz Auth Secret/Token</label>
+                <div className="relative">
+                  <input
+                    type={showVobizSecret ? 'text' : 'password'}
+                    placeholder="••••••••••••••••"
+                    value={settings.vobizAuthToken}
+                    onChange={(e) => handleChange('vobizAuthToken', e.target.value)}
+                    className="w-full border border-outline-variant rounded-lg px-sm py-2 pr-10 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowVobizSecret((s) => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {showVobizSecret ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">AI System Prompt (Billing Guidelines)</label>
+                <textarea
+                  rows={8}
+                  placeholder="You are an empathetic, professional medical billing assistant..."
+                  value={settings.systemPrompt}
+                  onChange={(e) => handleChange('systemPrompt', e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary font-sans resize-y"
+                />
+              </div>
+            </>
+          )}
+
+          {activeTab === 'WhatsApp Integration' && (
             <>
               <div className="space-y-sm">
                 <label className="block font-label-md text-label-md text-on-surface">WhatsApp Sender ID</label>
@@ -146,29 +222,49 @@ export default function SettingsPage() {
                   placeholder="+91 XXXXX XXXXX"
                   value={settings.whatsappSenderId}
                   onChange={(e) => handleChange('whatsappSenderId', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </div>
               <div className="space-y-sm">
-                <label className="block font-label-md text-label-md text-on-surface">SMS Sender ID</label>
+                <label className="block font-label-md text-label-md text-on-surface">Meta Access Token</label>
+                <div className="relative">
+                  <input
+                    type={showMetaSecret ? 'text' : 'password'}
+                    placeholder="EAAGxxxxxxxxxxxxxxxx"
+                    value={settings.metaAccessToken}
+                    onChange={(e) => handleChange('metaAccessToken', e.target.value)}
+                    className="w-full border border-outline-variant rounded-lg px-sm py-2 pr-10 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowMetaSecret((s) => !s)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">
+                      {showMetaSecret ? 'visibility_off' : 'visibility'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-sm">
+                <label className="block font-label-md text-label-md text-on-surface">Meta Phone Number ID</label>
                 <input
                   type="text"
-                  placeholder="AUVIA"
-                  value={settings.smsSenderId}
-                  onChange={(e) => handleChange('smsSenderId', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                  placeholder="Meta Phone Number ID..."
+                  value={settings.metaPhoneNumberId}
+                  onChange={(e) => handleChange('metaPhoneNumberId', e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </div>
               <div className="space-y-sm">
-                <label className="block font-label-md text-label-md text-on-surface">Preferred Channel</label>
-                <select
-                  value={settings.preferredChannel}
-                  onChange={(e) => handleChange('preferredChannel', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-surface-container-lowest text-on-surface cursor-pointer"
-                >
-                  <option value="whatsapp">WhatsApp first, fallback to SMS</option>
-                  <option value="sms">SMS only</option>
-                </select>
+                <label className="block font-label-md text-label-md text-on-surface">WhatsApp Business Account (WABA) ID</label>
+                <input
+                  type="text"
+                  placeholder="WABA ID..."
+                  value={settings.wabaId}
+                  onChange={(e) => handleChange('wabaId', e.target.value)}
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                />
               </div>
             </>
           )}
@@ -181,7 +277,7 @@ export default function SettingsPage() {
                   type="number"
                   value={settings.maxConcurrentCalls}
                   onChange={(e) => handleChange('maxConcurrentCalls', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </div>
               <div className="space-y-sm">
@@ -190,38 +286,39 @@ export default function SettingsPage() {
                   type="number"
                   value={settings.maxRetryAttempts}
                   onChange={(e) => handleChange('maxRetryAttempts', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                 />
               </div>
               <div className="space-y-sm">
                 <label className="block font-label-md text-label-md text-on-surface">Retry Cooldown</label>
-                <select
+                <CustomDropdown
                   value={settings.retryCooldownHours}
-                  onChange={(e) => handleChange('retryCooldownHours', e.target.value)}
-                  className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-surface-container-lowest text-on-surface cursor-pointer"
-                >
-                  <option value="2">2 hours</option>
-                  <option value="6">6 hours</option>
-                  <option value="24">24 hours</option>
-                </select>
+                  options={[
+                    { value: 2, label: '2 hours' },
+                    { value: 6, label: '6 hours' },
+                    { value: 24, label: '24 hours' }
+                  ]}
+                  onChange={(val) => handleChange('retryCooldownHours', val)}
+                  minWidthClass="w-full"
+                />
               </div>
               <div className="grid grid-cols-2 gap-sm">
                 <div className="space-y-sm">
                   <label className="block font-label-md text-label-md text-on-surface">Calling Window Start</label>
                   <input
-                    type="time"
-                    value={settings.callingWindowStart}
-                    onChange={(e) => handleChange('callingWindowStart', e.target.value)}
-                    className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                     type="time"
+                     value={settings.callingWindowStart}
+                     onChange={(e) => handleChange('callingWindowStart', e.target.value)}
+                     className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                   />
                 </div>
                 <div className="space-y-sm">
                   <label className="block font-label-md text-label-md text-on-surface">Calling Window End</label>
                   <input
-                    type="time"
-                    value={settings.callingWindowEnd}
-                    onChange={(e) => handleChange('callingWindowEnd', e.target.value)}
-                    className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                     type="time"
+                     value={settings.callingWindowEnd}
+                     onChange={(e) => handleChange('callingWindowEnd', e.target.value)}
+                     className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
                   />
                 </div>
               </div>
@@ -238,7 +335,7 @@ export default function SettingsPage() {
                 type="text"
                 value={settings.organizationName}
                 onChange={(e) => handleChange('organizationName', e.target.value)}
-                className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface"
+                className="w-full border border-outline-variant rounded-lg px-sm py-2 font-body-sm text-body-sm bg-transparent text-on-surface focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary"
               />
             </div>
           )}

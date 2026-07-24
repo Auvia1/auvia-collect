@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import Badge from '../components/ui/Badge.jsx'
 import { api } from '../services/api.js'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -249,20 +250,17 @@ export default function CreditManagement() {
             </button>
           ))}
 
-          {/* Clinic filter (shared) */}
           <div className="ml-auto">
-            <select
+            <CustomDropdown
               value={clinicFilter}
-              onChange={(e) => setClinicFilter(e.target.value)}
-              className="border border-gray-200 rounded-lg px-3 py-2 text-sm text-[#1e293b] bg-white focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81] cursor-pointer"
-            >
-              <option value="">All Clinics</option>
-              {clinicNames.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: '', label: 'All Clinics' },
+                ...clinicNames.map((n) => ({ value: n, label: n }))
+              ]}
+              onChange={setClinicFilter}
+              icon="local_hospital"
+              minWidthClass="w-full sm:w-auto min-w-[170px]"
+            />
           </div>
         </div>
       </div>
@@ -454,24 +452,24 @@ export default function CreditManagement() {
               {/* Clinic selector */}
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1.5">Select Clinic</label>
-                <select
-                  required
+                <CustomDropdown
                   value={grantClinic?.id || ''}
-                  onChange={(e) => {
-                    const c = (data?.clinics || []).find((x) => x.id === e.target.value)
+                  options={[
+                    { value: '', label: '— Choose a clinic —' },
+                    ...(data?.clinics || []).map((c) => ({
+                      value: c.id,
+                      label: `${c.name} (Balance: ${parseInt(c.credits) || 0})`
+                    }))
+                  ]}
+                  onChange={(val) => {
+                    const c = (data?.clinics || []).find((x) => x.id === val)
                     setGrantClinic(c ? { id: c.id, name: c.name } : null)
                     setGrantSuccess('')
                     setGrantError('')
                   }}
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-[#1e293b] bg-white focus:outline-none focus:border-[#0f4c81] focus:ring-2 focus:ring-[#0f4c81]/20 transition-all"
-                >
-                  <option value="">— Choose a clinic —</option>
-                  {(data?.clinics || []).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name} (Balance: {parseInt(c.credits) || 0})
-                    </option>
-                  ))}
-                </select>
+                  icon="local_hospital"
+                  minWidthClass="w-full"
+                />
               </div>
 
               {/* Credits input */}

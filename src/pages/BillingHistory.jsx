@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import Button from '../components/ui/Button.jsx'
 import Badge from '../components/ui/Badge.jsx'
+import CustomDropdown from '../components/ui/CustomDropdown.jsx'
 import { api } from '../services/api.js'
 
 export default function BillingHistory() {
@@ -140,16 +141,18 @@ export default function BillingHistory() {
         </div>
 
         <div className="flex gap-sm w-full md:w-auto">
-          <select
+          <CustomDropdown
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="border border-outline-variant rounded-lg px-3 py-2 text-body-sm text-on-surface-variant bg-surface-container-lowest focus:ring-1 focus:ring-primary focus:border-primary cursor-pointer w-full md:w-44"
-          >
-            <option value="">All Statuses</option>
-            <option value="Success">Success</option>
-            <option value="Pending">Pending</option>
-            <option value="Failed">Failed</option>
-          </select>
+            options={[
+              { value: '', label: 'All Statuses' },
+              { value: 'Success', label: 'Success' },
+              { value: 'Pending', label: 'Pending' },
+              { value: 'Failed', label: 'Failed' }
+            ]}
+            onChange={setStatusFilter}
+            icon="filter_alt"
+            minWidthClass="w-full md:w-44"
+          />
         </div>
       </section>
 

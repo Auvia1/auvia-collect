@@ -80,3 +80,17 @@ h1, h2, h3, h4, h5, h6 {
 .animate-shimmer {
   animation: shimmer 2s infinite;
 }
+
+/* Bento Card Style */
+.bento-card {
+  background-color: theme('colors.surface-container-lowest');
+  border: 1px solid theme('colors.outline-variant');
+  border-radius: theme('borderRadius.xl');
+  box-shadow: theme('boxShadow.ambient');
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+
+.bento-card:hover {
+  box-shadow: 0px 8px 30px rgba(0, 0, 0, 0.08);
+}
+

@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
+import { logActivity } from '../utils/activityLog.js';
 
 const router = express.Router();
 
@@ -81,7 +82,7 @@ router.get('/', authMiddleware, async (req, res) => {
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT c.id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
+      `SELECT c.id, c.contact_id, c.campaign_id, cont.name as customer_name, cont.phone as customer_phone, cont.amount_due,
               camp.name as campaign_name, c.call_status, c.duration_seconds, c.outcome,
               c.ai_summary, c.recording_url, c.transcript, c.sentiment,
               c.amount, c.vobiz_call_sid, c.telephony_call_id, c.credits_billed,
@@ -106,6 +107,26 @@ router.get('/:id', authMiddleware, async (req, res) => {
 
     const row = result.rows[0];
     
+    // Fetch all call attempts for this contact in this campaign
+    const historyResult = await db.query(
+      `SELECT id, call_status, duration_seconds, outcome, ai_summary, created_at, attempt_number, recording_url
+       FROM calls
+       WHERE contact_id = $1 AND campaign_id = $2 AND clinic_id = $3
+       ORDER BY created_at ASC`,
+      [row.contact_id, row.campaign_id, req.clinicId]
+    );
+
+    const history = historyResult.rows.map((r, idx) => ({
+      id: r.id,
+      attemptNumber: r.attempt_number || (idx + 1),
+      callStatus: getCallStatusLabel(r.call_status),
+      duration: formatDuration(r.duration_seconds),
+      outcome: r.outcome,
+      summary: r.ai_summary || 'No summary available.',
+      date: r.created_at,
+      hasRecording: !!r.recording_url
+    }));
+
     // Parse transcript JSON
     let parsedTranscript = [];
     if (row.transcript) {
@@ -138,6 +159,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       outcome: row.outcome,
       vobizCallSid: row.vobiz_call_sid || null,
       telephonyCallId: row.telephony_call_id || null,
+      history
     });
   } catch (err) {
     console.error('Error fetching call details:', err);
@@ -153,7 +175,7 @@ router.get('/callback/queue', authMiddleware, async (req, res) => {
               c.callback_date, c.callback_time, cont.notes, c.created_at
        FROM calls c
        JOIN contacts cont ON cont.id = c.contact_id
-       WHERE c.clinic_id = $1 AND c.outcome = 'call_later' AND c.call_status = 'completed'
+       WHERE c.clinic_id = $1 AND c.outcome = 'call_later' AND c.call_status IN ('completed', 'not_answered', 'failed')
        ORDER BY c.callback_date ASC, c.callback_time ASC`,
       [req.clinicId]
     );
@@ -161,17 +183,25 @@ router.get('/callback/queue', authMiddleware, async (req, res) => {
     const formatted = result.rows.map((row) => {
       let timeStr = 'Scheduled';
       if (row.callback_date) {
-        const date = new Date(row.callback_date);
-        const today = new Date();
-        const tomorrow = new Date();
-        tomorrow.setDate(today.getDate() + 1);
+        // Parse as local date to avoid UTC midnight → day-behind shift
+        const rawStr = typeof row.callback_date === 'string'
+          ? row.callback_date
+          : row.callback_date.toISOString()
+        const [y, mo, d] = rawStr.split('T')[0].split('-').map(Number)
+        const date = new Date(y, mo - 1, d)
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+        const tomorrow = new Date(today)
+        tomorrow.setDate(today.getDate() + 1)
 
-        const isToday = date.toDateString() === today.toDateString();
-        const isTomorrow = date.toDateString() === tomorrow.toDateString();
+        const isToday = date >= today && date < tomorrow
+        const tomorrowEnd = new Date(tomorrow)
+        tomorrowEnd.setDate(tomorrow.getDate() + 1)
+        const isTomorrow = date >= tomorrow && date < tomorrowEnd
 
-        const baseDate = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const timeVal = row.callback_time ? row.callback_time.substring(0, 5) : '';
-        timeStr = `${baseDate}${timeVal ? `, ${timeVal}` : ''}`;
+        const baseDate = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        const timeVal = row.callback_time ? row.callback_time.substring(0, 5) : ''
+        timeStr = `${baseDate}${timeVal ? `, ${timeVal}` : ''}`
       }
 
       return {
@@ -238,6 +268,15 @@ router.post('/:id/feedback', authMiddleware, async (req, res) => {
     }
 
     await db.query('COMMIT');
+    // Fire-and-forget: log call outcome/feedback
+    if (outcome === 'call_later' && callbackDate) {
+      logActivity(req.clinicId, req.user, 'Callback Scheduled', 'callback',
+        `Callback scheduled for ${callbackDate}${callbackTime ? ' at ' + callbackTime : ''}`,
+        { callId: req.params.id, callbackDate, callbackTime });
+    } else if (outcome) {
+      logActivity(req.clinicId, req.user, 'Call Outcome Updated', 'calls',
+        `Call marked as: ${outcome}`, { callId: req.params.id, outcome });
+    }
     res.json({ success: true });
   } catch (err) {
     await db.query('ROLLBACK');

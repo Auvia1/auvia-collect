@@ -234,6 +234,19 @@ export const api = {
     });
   },
 
+  // Activity Logs
+  async getActivityLogs({ category = 'all', limit = 50, offset = 0 } = {}) {
+    const params = new URLSearchParams({ category, limit, offset });
+    return request(`/activity-logs?${params}`);
+  },
+
+  async logActivity({ action, category = 'general', description = '', metadata = {} }) {
+    return request('/activity-logs', {
+      method: 'POST',
+      body: JSON.stringify({ action, category, description, metadata }),
+    });
+  },
+
   // Platform Admin
   async getAdminClinics() {
     return request('/admin/clinics');
@@ -319,6 +332,11 @@ export const api = {
     return request(`/admin/clinics/${id}`, {
       method: 'DELETE',
     });
+  },
+
+  async getClinicDashboard(trend = 'monthly', filters = {}) {
+    const params = new URLSearchParams({ trend, ...filters });
+    return request(`/dashboard?${params.toString()}`);
   },
 };
 

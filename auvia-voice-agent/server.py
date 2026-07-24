@@ -75,6 +75,11 @@ async def lifespan(app: FastAPI):
             logger.error(f"DB pool init failed: {e}")
 
     logger.info(f"🚀 Auvia Voice Agent server started natively on port {AGENT_PORT}")
+    
+    # Start the callback engine in the background
+    from callback_worker import process_scheduled_callbacks
+    asyncio.create_task(process_scheduled_callbacks())
+    
     yield
 
     if _db_pool: await _db_pool.close()
@@ -332,7 +337,10 @@ async def vobiz_hangup(request: Request):
             async with _db_pool.acquire() as conn:
                 # 1. Retrieve call and clinic info
                 call_row = await conn.fetchrow(
-                    "SELECT clinic_id, call_status, outcome FROM calls WHERE id = $1 LIMIT 1",
+                    """SELECT c.clinic_id, c.call_status, c.outcome, cl.retry_cooldown_hours
+                       FROM calls c
+                       JOIN clinics cl ON c.clinic_id = cl.id
+                       WHERE c.id = $1 LIMIT 1""",
                     uuid.UUID(db_call_id)
                 )
                 if call_row:
@@ -342,9 +350,17 @@ async def vobiz_hangup(request: Request):
                     
                     # 2. If call didn't reach definitive outcome, convert to callback queue
                     if not current_outcome or current_outcome == "other":
-                        tomorrow = datetime.date.today() + datetime.timedelta(days=1)
-                        callback_date = tomorrow.strftime("%Y-%m-%d")
-                        callback_time = "10:00:00"
+                        import pytz
+                        IST = pytz.timezone('Asia/Kolkata')
+                        now_ist = datetime.datetime.now(IST)
+                        
+                        cooldown_hours = call_row["retry_cooldown_hours"]
+                        if cooldown_hours is None:
+                            cooldown_hours = 2
+                            
+                        callback_dt = now_ist + datetime.timedelta(hours=cooldown_hours)
+                        callback_date = callback_dt.strftime("%Y-%m-%d")
+                        callback_time = callback_dt.strftime("%H:%M:%S")
                         
                         body_bytes = await request.body()
                         body_str = body_bytes.decode('utf-8', errors='ignore')
@@ -361,32 +377,37 @@ async def vobiz_hangup(request: Request):
                         status_from_vobiz = (data.get("CallStatus") or data.get("status") or "").lower()
                         cause_from_vobiz = (data.get("HangupCause") or data.get("hangup_cause") or "").lower()
                         
+                        # 🚀 THE FIX: Accurately map Vobiz network events to your specific Database Enums
+                        final_call_status = "completed"
                         label = "Unanswered"
-                        if current_status == "in_progress":
-                            label = "Hung up"
-                        elif "busy" in [status_from_vobiz, cause_from_vobiz]:
-                            label = "Busy"
-                        elif "no-answer" in [status_from_vobiz, cause_from_vobiz]:
-                            label = "Unanswered"
-                        elif "failed" in [status_from_vobiz, cause_from_vobiz]:
+
+                        if "failed" in [status_from_vobiz, cause_from_vobiz]:
+                            final_call_status = "failed"
                             label = "Failed"
+                        elif "no-answer" in [status_from_vobiz, cause_from_vobiz] or "busy" in [status_from_vobiz, cause_from_vobiz]:
+                            final_call_status = "not_answered"
+                            label = "Unanswered"
+                        elif current_status == "queued":
+                            final_call_status = "not_answered"
+                            label = "Unanswered"
                         else:
-                            label = "Unanswered" if current_status == "queued" else "Hung up"
+                            final_call_status = "completed"
+                            label = "Hung up" # Call connected, but user hung up before the AI could set an outcome
                             
                         await conn.execute(
                             """UPDATE calls 
-                               SET call_status = 'completed', 
+                               SET call_status = $1, 
                                    outcome = 'call_later',
-                                   callback_date = $1,
-                                   callback_time = $2,
+                                   callback_date = $2,
+                                   callback_time = $3,
                                    amount = 0,
-                                   ai_summary = $3,
+                                   ai_summary = $4,
                                    ended_at = COALESCE(ended_at, NOW()),
                                    updated_at = NOW()
-                               WHERE id = $4""",
-                            callback_date, callback_time, label, uuid.UUID(db_call_id)
+                               WHERE id = $5""",
+                            final_call_status, callback_date, callback_time, label, uuid.UUID(db_call_id)
                         )
-                        logger.info(f"✅ Call {db_call_id} marked as callback 'call_later' ({label})")
+                        logger.info(f"✅ Call {db_call_id} marked as callback 'call_later' (Status: {final_call_status}, Reason: {label})")
                     else:
                         if current_status in ["in_progress", "queued"]:
                             await conn.execute(

@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db.js';
 import authMiddleware from '../middleware/auth.js';
 import { startCampaignSimulation } from '../services/simulator.js';
+import { logActivity } from '../utils/activityLog.js';
 
 const router = express.Router();
 
@@ -122,6 +123,9 @@ router.post('/', authMiddleware, async (req, res) => {
     );
 
     res.status(201).json(result.rows[0]);
+    // Fire-and-forget activity log
+    logActivity(req.clinicId, req.user, 'Campaign Created', 'campaign',
+      `New campaign "${name}" created`, { campaignId: result.rows[0].id });
   } catch (err) {
     console.error('Error creating campaign:', err);
     res.status(500).json({ error: 'Failed to create campaign' });
@@ -244,6 +248,10 @@ router.post('/:id/contacts', authMiddleware, async (req, res) => {
       invalidCount,
       totalAmountDue,
     });
+    // Fire-and-forget activity log
+    logActivity(req.clinicId, req.user, 'Contacts Uploaded', 'campaign',
+      `${validContacts.length} contacts imported from ${filename || 'CSV'}`,
+      { campaignId: req.params.id, count: validContacts.length, file: filename });
   } catch (err) {
     await db.query('ROLLBACK');
     console.error('Error bulk uploading contacts:', err);
@@ -665,6 +673,8 @@ router.post('/:id/start', authMiddleware, async (req, res) => {
     // startCampaignSimulation(campaignId, req.clinicId);
 
     res.json({ success: true, message: 'Campaign started successfully' });
+    logActivity(req.clinicId, req.user, 'Campaign Started', 'campaign',
+      `Campaign "${campaign.name}" started`, { campaignId });
   } catch (err) {
     console.error('Error starting campaign:', err);
     res.status(500).json({ error: 'Failed to start campaign' });
@@ -703,6 +713,8 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     await db.query(`DELETE FROM campaigns WHERE id = $1`, [req.params.id]);
 
     res.json({ success: true, message: 'Draft campaign deleted successfully' });
+    logActivity(req.clinicId, req.user, 'Campaign Deleted', 'campaign',
+      `Draft campaign deleted`, { campaignId: req.params.id });
   } catch (err) {
     console.error('Error deleting draft campaign:', err);
     res.status(500).json({ error: 'Failed to delete campaign' });
@@ -742,6 +754,8 @@ router.post('/:id/stop', authMiddleware, async (req, res) => {
     );
 
     res.json({ success: true, message: 'Campaign stopped successfully' });
+    logActivity(req.clinicId, req.user, 'Campaign Stopped', 'campaign',
+      `Campaign "${campaign.name}" stopped/completed`, { campaignId });
   } catch (err) {
     console.error('Error stopping campaign:', err);
     res.status(500).json({ error: 'Failed to stop campaign' });

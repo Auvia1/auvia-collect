@@ -227,14 +227,46 @@ export default function CustomerDetail() {
           </div>
 
           <div className="bg-surface-container-lowest rounded-2xl shadow-ambient p-md border border-surface-variant">
-            <h3 className="text-body-lg font-body-lg font-semibold text-on-surface mb-4">Call History</h3>
-            <ul className="space-y-4 relative before:absolute before:inset-y-0 before:left-2.5 before:w-px before:bg-outline-variant/40">
-              <li className="relative pl-8">
-                <div className="absolute left-1.5 top-1.5 w-2 h-2 rounded-full bg-primary ring-4 ring-surface-container-lowest" />
-                <div className="text-label-sm font-label-sm text-on-surface-variant mb-0.5">Attempt #1</div>
-                <div className="text-body-sm font-body-sm text-on-surface font-medium">{customer.callStatus}</div>
-              </li>
-            </ul>
+            <h3 className="text-body-lg font-body-lg font-semibold text-on-surface mb-4">Call History (Attempts)</h3>
+            {customer.history && customer.history.length > 0 ? (
+              <ul className="space-y-4 relative before:absolute before:inset-y-0 before:left-2.5 before:w-px before:bg-outline-variant/40">
+                {customer.history.map((attempt) => {
+                  const isCurrent = attempt.id === customer.id
+                  return (
+                    <li
+                      key={attempt.id}
+                      onClick={() => !isCurrent && navigate(`/call-log/${attempt.id}`)}
+                      className={`relative pl-8 group ${!isCurrent ? 'cursor-pointer hover:opacity-80' : ''}`}
+                    >
+                      <div className={`absolute left-1.5 top-1.5 w-2 h-2 rounded-full ring-4 ring-surface-container-lowest ${isCurrent ? 'bg-primary' : 'bg-outline-variant group-hover:bg-primary transition-colors'}`} />
+                      <div className="flex justify-between items-baseline">
+                        <span className={`text-label-sm font-label-sm uppercase tracking-wider ${isCurrent ? 'text-primary font-bold' : 'text-on-surface-variant'}`}>
+                          Attempt #{attempt.attemptNumber} {isCurrent && '(Viewing)'}
+                        </span>
+                        <span className="text-[10px] text-on-surface-variant">
+                          {new Date(attempt.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                        </span>
+                      </div>
+                      <div className="text-body-sm font-body-sm text-on-surface font-medium mt-0.5 flex justify-between items-center">
+                        <span>{attempt.callStatus} {attempt.duration !== '0m 00s' && `(${attempt.duration})`}</span>
+                        {!isCurrent && (
+                          <span className="material-symbols-outlined text-xs text-outline opacity-0 group-hover:opacity-100 transition-opacity">
+                            arrow_forward_ios
+                          </span>
+                        )}
+                      </div>
+                      {attempt.summary && attempt.summary !== 'No summary available.' && (
+                        <p className="text-[11px] text-on-surface-variant mt-1 italic line-clamp-1">
+                          {attempt.summary}
+                        </p>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            ) : (
+              <p className="text-body-sm font-body-sm text-on-surface-variant italic">No call history recorded.</p>
+            )}
           </div>
 
           {customer.payment && (

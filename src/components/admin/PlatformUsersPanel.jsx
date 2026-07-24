@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { api } from '../../services/api.js'
 import Badge from '../ui/Badge.jsx'
 import Button from '../ui/Button.jsx'
+import CustomDropdown from '../ui/CustomDropdown.jsx'
 
 export default function PlatformUsersPanel() {
   const [users, setUsers] = useState([])
@@ -104,27 +105,29 @@ export default function PlatformUsersPanel() {
               className="w-64 pl-9 pr-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81]"
             />
           </div>
-          <select
+          <CustomDropdown
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="py-2 px-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81]"
-          >
-            <option value="all">All Statuses</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="rejected">Rejected</option>
-          </select>
-          <select
+            options={[
+              { value: 'all', label: 'All Statuses' },
+              { value: 'pending', label: 'Pending' },
+              { value: 'approved', label: 'Approved' },
+              { value: 'rejected', label: 'Rejected' }
+            ]}
+            onChange={setStatusFilter}
+            icon="filter_alt"
+            minWidthClass="min-w-[150px]"
+          />
+          <CustomDropdown
             value={clinicFilter}
-            onChange={(e) => setClinicFilter(e.target.value)}
-            className="py-2 px-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-[#1e293b] focus:outline-none focus:border-[#0f4c81] focus:ring-1 focus:ring-[#0f4c81] max-w-[200px]"
-          >
-            <option value="all">All Clinics</option>
-            <option value="none">No Clinic</option>
-            {uniqueClinics.map(([id, name]) => (
-              <option key={id} value={id}>{name}</option>
-            ))}
-          </select>
+            options={[
+              { value: 'all', label: 'All Clinics' },
+              { value: 'none', label: 'No Clinic' },
+              ...uniqueClinics.map(([id, name]) => ({ value: id, label: name }))
+            ]}
+            onChange={setClinicFilter}
+            icon="local_hospital"
+            minWidthClass="min-w-[160px] max-w-[200px]"
+          />
         </div>
       </div>
 
@@ -159,25 +162,29 @@ export default function PlatformUsersPanel() {
                       <div className="grid grid-cols-3 gap-4">
                         <div>
                           <label className="block text-xs font-semibold text-[#475569] mb-1">User Type</label>
-                          <select
+                          <CustomDropdown
                             value={editForm.user_type}
-                            onChange={e => setEditForm({ ...editForm, user_type: e.target.value })}
-                            className="w-full border border-gray-200 rounded-lg p-2 text-sm"
-                          >
-                            <option value="client">Client</option>
-                            <option value="admin">Admin</option>
-                          </select>
+                            options={[
+                              { value: 'client', label: 'Client' },
+                              { value: 'admin', label: 'Admin' }
+                            ]}
+                            onChange={(val) => setEditForm({ ...editForm, user_type: val })}
+                            icon="person"
+                            minWidthClass="w-full"
+                          />
                         </div>
                         <div>
                           <label className="block text-xs font-semibold text-[#475569] mb-1">Platform Role</label>
-                          <select
+                          <CustomDropdown
                             value={editForm.platform_role}
-                            onChange={e => setEditForm({ ...editForm, platform_role: e.target.value })}
-                            className="w-full border border-gray-200 rounded-lg p-2 text-sm"
-                          >
-                            <option value="standard">Standard</option>
-                            <option value="platform_admin">Platform Admin</option>
-                          </select>
+                            options={[
+                              { value: 'standard', label: 'Standard' },
+                              { value: 'platform_admin', label: 'Platform Admin' }
+                            ]}
+                            onChange={(val) => setEditForm({ ...editForm, platform_role: val })}
+                            icon="admin_panel_settings"
+                            minWidthClass="w-full"
+                          />
                         </div>
                         <div>
                           <label className="block text-xs font-semibold text-[#475569] mb-1">Active State</label>
