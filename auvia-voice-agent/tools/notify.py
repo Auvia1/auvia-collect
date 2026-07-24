@@ -1,6 +1,7 @@
 #tools/notify.py
 import httpx
 import datetime
+from zoneinfo import ZoneInfo
 from loguru import logger
 
 def _format_whatsapp_number(phone_number: str) -> str:
@@ -141,8 +142,9 @@ async def send_payment_receipt_template(
     digits_only = "".join(filter(str.isdigit, str(phone_number)))
     formatted_number = f"91{digits_only}" if len(digits_only) == 10 else digits_only
 
-    # Format current date and time
-    current_time = datetime.datetime.now().strftime("%B %d, %Y at %I:%M %p")
+    # Format current date and time in IST (Asia/Kolkata)
+    ist_now = datetime.datetime.now(ZoneInfo('Asia/Kolkata'))
+    current_time = ist_now.strftime("%B %d, %Y at %I:%M %p")
 
     url = f"https://graph.facebook.com/v22.0/{meta_phone_number_id}/messages"
     headers = {
