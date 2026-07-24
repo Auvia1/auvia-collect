@@ -273,13 +273,9 @@ async def initiate_call(req: InitiateCallRequest, request: Request):
 @app.post("/vobiz-answer")
 async def vobiz_answer(request: Request):
     """Vobiz hits this when the patient picks up the phone."""
-    public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL")
-    if not public_url:
-        host = request.headers.get("host", "api.nexovai.in")
-        public_url = f"https://{host}"
-    
-    public_url = public_url.rstrip("/")
-    host_only = public_url.replace("https://", "").replace("http://", "")
+    # 🚀 THE FIX: Hardcode the correct domain to guarantee the WebSocket connects
+    public_url = "https://collectagent.nexovai.in"
+    host_only = "collectagent.nexovai.in"
 
     db_call_id = request.query_params.get("callId", "")
 

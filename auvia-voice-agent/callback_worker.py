@@ -92,8 +92,10 @@ async def process_scheduled_callbacks():
 
 async def trigger_vobiz_outbound(data, db_call_id):
     """Executes the Vobiz API request and caches the session."""
-    public_url = os.getenv("PUBLIC_API_URL") or os.getenv("PUBLIC_URL") or "https://collectagent.nexovai.in"
-    public_url = public_url.rstrip("/")
+    
+    # 🚀 THE FIX: Hardcode your explicit domain so the background worker doesn't use Coolify internal IPs
+    public_url = "https://collectagent.nexovai.in"
+    
     auth_id = data["vobiz_auth_id"]
     auth_token = data["vobiz_auth_token"]
     
@@ -115,7 +117,6 @@ async def trigger_vobiz_outbound(data, db_call_id):
         "answer_url": f"{public_url}/vobiz-answer?callId={db_call_id}",
         "answer_method": "POST",
         "hangup_url": f"{public_url}/vobiz-hangup?callId={db_call_id}",
-        "answer_method": "POST", # Vobiz expects answer_method for callback URLs
         "hangup_method": "POST",
         "record": True,
         "record_url": f"{public_url}/vobiz-recording?callId={db_call_id}",
@@ -132,7 +133,15 @@ async def trigger_vobiz_outbound(data, db_call_id):
             
             if resp.status_code in [200, 201]:
                 vobiz_data = resp.json()
-                vobiz_call_id = vobiz_data.get("request_uuid") or vobiz_data.get("CallUUID") or str(uuid.uuid4())
+                
+                # 🚀 THE FIX: Match server.py exactly so we don't accidentally cache a random UUID
+                vobiz_call_id = (
+                    vobiz_data.get("request_uuid") or 
+                    vobiz_data.get("api_id") or 
+                    vobiz_data.get("CallUUID") or 
+                    vobiz_data.get("sid") or 
+                    str(uuid.uuid4())
+                )
 
                 pool = get_pool()
                 async with pool.acquire() as conn:
