@@ -171,12 +171,17 @@ router.get('/:id', authMiddleware, async (req, res) => {
 router.get('/callback/queue', authMiddleware, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT c.id as call_id, cont.campaign_id as campaign_id, cont.id as contact_id, cont.name, cont.phone, cont.amount_due, cont.payment_context,
-              c.callback_date, c.callback_time, cont.notes, c.created_at
-       FROM calls c
-       JOIN contacts cont ON cont.id = c.contact_id
-       WHERE c.clinic_id = $1 AND c.outcome = 'call_later' AND c.call_status IN ('completed', 'not_answered', 'failed')
-       ORDER BY c.callback_date ASC, c.callback_time ASC`,
+      `SELECT latest_calls.id as call_id, cont.campaign_id as campaign_id, cont.id as contact_id, cont.name, cont.phone, cont.amount_due, cont.payment_context,
+              latest_calls.callback_date, latest_calls.callback_time, cont.notes, latest_calls.created_at
+       FROM (
+         SELECT DISTINCT ON (contact_id) *
+         FROM calls
+         WHERE clinic_id = $1
+         ORDER BY contact_id, created_at DESC
+       ) as latest_calls
+       JOIN contacts cont ON cont.id = latest_calls.contact_id
+       WHERE latest_calls.outcome = 'call_later' AND latest_calls.call_status IN ('completed', 'not_answered', 'failed')
+       ORDER BY latest_calls.callback_date ASC, latest_calls.callback_time ASC`,
       [req.clinicId]
     );
 

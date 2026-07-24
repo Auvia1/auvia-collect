@@ -17,13 +17,16 @@ async function checkAndCompleteCampaign(campaignId) {
   try {
     const activeCalls = await db.query(
       `SELECT COUNT(*)::int as count 
-       FROM calls c
-       JOIN clinics cl ON c.clinic_id = cl.id
-       WHERE c.campaign_id = $1 
-       AND (
-         c.call_status IN ('queued', 'in_progress') 
-         OR (c.outcome = 'call_later' AND c.attempt_number < cl.max_retry_attempts)
-       )`,
+       FROM (
+         SELECT DISTINCT ON (c.contact_id) 
+           c.call_status, c.outcome, c.attempt_number, cl.max_retry_attempts
+         FROM calls c
+         JOIN clinics cl ON c.clinic_id = cl.id
+         WHERE c.campaign_id = $1
+         ORDER BY c.contact_id, c.created_at DESC
+       ) as latest_calls
+       WHERE latest_calls.call_status IN ('queued', 'in_progress') 
+          OR (latest_calls.outcome = 'call_later' AND latest_calls.attempt_number < latest_calls.max_retry_attempts)`,
       [campaignId]
     );
 
